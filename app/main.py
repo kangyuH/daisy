@@ -12,7 +12,7 @@ from app.infra.db import db_path, init_db_sync
 from app.infra.events.manager import BotManager
 from app.services.bots.models import load_bots_from_db
 from app.services.bots.store import BotStore
-from app.services.queue.service import JobQueue
+from app.services.queue.service import ItemQueue
 
 
 class StubBotManager:
@@ -47,7 +47,7 @@ def create_app(*, testing: bool = False) -> FastAPI:
     async def lifespan(app: FastAPI):
         path = init_db_sync()
         app.state.db_path = str(path)
-        app.state.queue = JobQueue(str(path))
+        app.state.queue = ItemQueue(str(path))
         store = BotStore(str(path))
         app.state.bot_store = store
         app.state.calibration_chat_id = calibration_chat_id()

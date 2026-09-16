@@ -7,7 +7,7 @@ from fastapi import Header, HTTPException, Request
 from app.core.settings import get_settings
 from app.infra.events.manager import BotManager
 from app.services.bots.store import BotStore
-from app.services.queue.service import JobQueue
+from app.services.queue.service import ItemQueue
 
 
 def check_token(authorization: Optional[str] = Header(default=None)) -> None:
@@ -18,7 +18,7 @@ def check_token(authorization: Optional[str] = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
-def get_queue(request: Request) -> JobQueue:
+def get_queue(request: Request) -> ItemQueue:
     q = getattr(request.app.state, "queue", None)
     if q is None:
         raise HTTPException(status_code=503, detail="queue not ready")

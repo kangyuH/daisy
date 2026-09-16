@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 
 from app.core.settings import calibration_chat_id
 from app.infra.db import db_path
-from app.services.queue.service import JobQueue
+from app.services.queue.service import ItemQueue
 
 router = APIRouter(tags=["health"])
 
@@ -14,7 +14,7 @@ router = APIRouter(tags=["health"])
 @router.get("/health")
 async def health(request: Request):
     queue_stats = None
-    q: Optional[JobQueue] = getattr(request.app.state, "queue", None)
+    q: Optional[ItemQueue] = getattr(request.app.state, "queue", None)
     if q:
         try:
             queue_stats = await q.stats("inbound")

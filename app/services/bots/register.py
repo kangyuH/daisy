@@ -8,7 +8,6 @@ from app.services.bots.store import STATUS_ERROR, STATUS_READY, STATUS_REGISTERI
 from app.core.settings import (
     auth_user_open_id,
     calibration_chat_id,
-    default_bot_id_from_app,
     user_cli_profile_args,
 )
 from app.services.bots.models import BotConfig
@@ -59,6 +58,37 @@ async def invite_bot_to_calibration(app_id: str, chat_id: str) -> dict[str, Any]
 
 
 async def resolve_bot_open_id_from_members(app_id: str, chat_id: str) -> Optional[str]:
+    bots = await _list_calib_bots(chat_id)
+    for item in bots:
+        member_id = str(
+            item.get("member_id") or item.get("open_id") or item.get("id") or ""
+        ).strip()
+        item_app = str(item.get("app_id") or "")
+        raw = json.dumps(item, ensure_ascii=False)
+        if item_app == app_id and member_id.startswith("ou_"):
+            return member_id
+        if app_id in raw and member_id.startswith("ou_"):
+            return member_id
+    if len(bots) == 1:
+        mid = str(bots[0].get("member_id") or bots[0].get("open_id") or "").strip()
+        if mid.startswith("ou_"):
+            return mid
+    return None
+
+
+async def resolve_bot_name_from_members(app_id: str, chat_id: str) -> Optional[str]:
+    """Display name from calibration chat bot members (by app_id)."""
+    bots = await _list_calib_bots(chat_id)
+    for item in bots:
+        if str(item.get("app_id") or "") != app_id:
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            return name
+    return None
+
+
+async def _list_calib_bots(chat_id: str) -> list[dict[str, Any]]:
     args = [
         "im",
         "+chat-members-list",
@@ -66,29 +96,12 @@ async def resolve_bot_open_id_from_members(app_id: str, chat_id: str) -> Optiona
         chat_id,
         *_user_args(),
     ]
-    # optional filters if supported by installed CLI
     result = await run_cli_async(args)
     data = result.get("data") or result
     bots = []
     if isinstance(data, dict):
         bots = data.get("bots") or []
-    for item in bots:
-        if not isinstance(item, dict):
-            continue
-        raw = json.dumps(item, ensure_ascii=False)
-        member_id = str(
-            item.get("member_id") or item.get("open_id") or item.get("id") or ""
-        ).strip()
-        if app_id in raw and member_id.startswith("ou_"):
-            return member_id
-        item_app = str(item.get("app_id") or "")
-        if item_app == app_id and member_id.startswith("ou_"):
-            return member_id
-    if len(bots) == 1 and isinstance(bots[0], dict):
-        mid = str(bots[0].get("member_id") or bots[0].get("open_id") or "").strip()
-        if mid.startswith("ou_"):
-            return mid
-    return None
+    return [b for b in bots if isinstance(b, dict)]
 
 
 async def send_calibrate_at_self_and_bot(
@@ -148,13 +161,13 @@ async def register_bot(
         raise RegisterError("app_id and app_secret are required")
 
     existing = store.get_bot_by_app_id(app_id)
-    bid = (bot_id or "").strip() or (
-        existing["id"] if existing else default_bot_id_from_app(app_id)
-    )
+    # Same app_id → reuse id; otherwise allocate numeric id (1,2,3…). Optional override via bot_id.
+    bid = (bot_id or "").strip() or (existing["id"] if existing else store.next_bot_id())
     if bid == app_id:
         raise RegisterError("id must differ from app_id (lark-cli profile name constraint)")
 
-    bname = (name or "").strip() or bid
+    name_override = (name or "").strip() or None
+    bname = name_override or (existing.get("name") if existing else None) or bid
     calib = calibration_chat_id()
 
     store.upsert_bot(
@@ -170,6 +183,12 @@ async def register_bot(
     consumer = None
     try:
         await invite_bot_to_calibration(app_id, calib)
+
+        if not name_override:
+            fetched = await resolve_bot_name_from_members(app_id, calib)
+            if fetched:
+                bname = fetched
+                store.update_bot_fields(bid, name=bname)
 
         cfg = BotConfig(
             id=bid,

@@ -40,6 +40,20 @@ class BotStore:
         finally:
             conn.close()
 
+    def next_bot_id(self) -> str:
+        """Allocate next numeric id as string: 1, 2, 3, ... (non-numeric ids ignored)."""
+        conn = self._connect()
+        try:
+            cur = conn.execute("SELECT id FROM bots")
+            max_n = 0
+            for row in cur.fetchall():
+                s = str(row["id"]).strip()
+                if s.isdigit():
+                    max_n = max(max_n, int(s))
+            return str(max_n + 1)
+        finally:
+            conn.close()
+
     def list_bots(self, *, include_secret: bool = False) -> list[dict[str, Any]]:
         conn = self._connect()
         try:

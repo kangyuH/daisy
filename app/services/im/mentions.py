@@ -124,16 +124,25 @@ def normalize_inbound_event(bot: "BotConfig", raw: dict[str, Any]) -> dict[str, 
         or (event.get("mentions") if isinstance(event, dict) else None)
     )
 
+    sender_open_id = _as_open_id(sender)
+    if sender_open_id is None and isinstance(sender, dict):
+        sender_open_id = _as_open_id(
+            sender.get("sender_id") or (sender.get("id") if isinstance(sender.get("id"), dict) else None)
+        )
+
     return {
         "bot_id": bot.id,
         "bot_name": bot.name,
         "app_id": bot.app_id,
+        "bot_open_id": bot.open_id,
+        "self_open_id": bot.self_open_id,
         "message_id": message_id,
         "chat_id": chat_id,
         "thread_id": raw.get("thread_id") or message.get("thread_id"),
         "content": raw.get("content") or message.get("content"),
         "message_type": raw.get("message_type") or message.get("message_type"),
         "sender": sender,
+        "sender_open_id": sender_open_id,
         "mentions": mentions,
         "event_id": event_id,
         "raw": raw,

@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_DB_PATH = ROOT / "data" / "gateway.db"
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS queue_jobs (
+CREATE TABLE IF NOT EXISTS queue_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     queue TEXT NOT NULL DEFAULT 'inbound',
     status TEXT NOT NULL,
@@ -29,10 +29,10 @@ CREATE TABLE IF NOT EXISTS queue_jobs (
     finished_at TEXT,
     error TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_idempotency
-    ON queue_jobs(idempotency_key) WHERE idempotency_key IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_queue_pending
-    ON queue_jobs(queue, status, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_items_idempotency
+    ON queue_items(idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_queue_items_pending
+    ON queue_items(queue, status, created_at);
 
 CREATE TABLE IF NOT EXISTS bots (
     id TEXT PRIMARY KEY,

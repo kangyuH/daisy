@@ -20,6 +20,33 @@ def compose_text(text: str, mention_open_ids: list[str] | None) -> str:
     return f"{prefix}{body}"
 
 
+def merge_mention_open_ids(
+    sender_open_id: Optional[str],
+    extra: list[str] | None = None,
+) -> list[str]:
+    """Sender first (if present), then extra in order, deduped."""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(oid: Optional[str]) -> None:
+        if not oid:
+            return
+        s = str(oid).strip()
+        if not s or s in seen:
+            return
+        seen.add(s)
+        out.append(s)
+
+    _add(sender_open_id)
+    for oid in extra or []:
+        _add(oid)
+    return out
+
+
+def should_reply_in_thread(thread_id: Optional[str]) -> bool:
+    return bool(thread_id and str(thread_id).strip())
+
+
 async def reply_message(
     *,
     message_id: str,
@@ -47,6 +74,28 @@ async def reply_message(
     if idempotency_key:
         args.extend(["--idempotency-key", idempotency_key[:50]])
     return await run_cli_async(args)
+
+
+async def respond_to_message(
+    *,
+    message_id: str,
+    text: str,
+    profile: str,
+    thread_id: Optional[str] = None,
+    sender_open_id: Optional[str] = None,
+    mention_open_ids: Optional[list[str]] = None,
+    idempotency_key: Optional[str] = None,
+) -> dict:
+    """Controlled reply: auto thread flag + sender-first mention merge."""
+    mentions = merge_mention_open_ids(sender_open_id, mention_open_ids)
+    return await reply_message(
+        message_id=message_id,
+        text=text,
+        mention_open_ids=mentions,
+        reply_in_thread=should_reply_in_thread(thread_id),
+        profile=profile,
+        idempotency_key=idempotency_key,
+    )
 
 
 async def send_message(
@@ -79,6 +128,9 @@ __all__ = [
     "LarkCliError",
     "build_mention_prefix",
     "compose_text",
+    "merge_mention_open_ids",
+    "should_reply_in_thread",
     "reply_message",
+    "respond_to_message",
     "send_message",
 ]

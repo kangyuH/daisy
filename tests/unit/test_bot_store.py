@@ -30,3 +30,31 @@ def test_bind_conflict_and_force(seeded_store: BotStore):
     forced = st.bind_chat("other", "oc_x", force=True)
     assert forced["bot_id"] == "other"
     assert forced["forced"] is True
+
+
+def test_next_bot_id_numeric(store: BotStore):
+    assert store.next_bot_id() == "1"
+    store.upsert_bot(
+        bot_id="gemi",
+        name="Gemi",
+        app_id="cli_a",
+        app_secret="s",
+        status=STATUS_READY,
+    )
+    assert store.next_bot_id() == "1"
+    store.upsert_bot(
+        bot_id="1",
+        name="One",
+        app_id="cli_b",
+        app_secret="s",
+        status=STATUS_READY,
+    )
+    assert store.next_bot_id() == "2"
+    store.upsert_bot(
+        bot_id="3",
+        name="Three",
+        app_id="cli_c",
+        app_secret="s",
+        status=STATUS_READY,
+    )
+    assert store.next_bot_id() == "4"

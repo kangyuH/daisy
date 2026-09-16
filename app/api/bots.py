@@ -20,8 +20,12 @@ router = APIRouter(prefix="/bots", tags=["bots"])
 class RegisterBody(BaseModel):
     app_id: str
     app_secret: str
-    id: Optional[str] = None
-    name: Optional[str] = None
+    id: Optional[str] = Field(
+        default=None, description="optional; omit to auto-allocate 1,2,3… (reuse if app_id exists)"
+    )
+    name: Optional[str] = Field(
+        default=None, description="optional; omit to fetch from calibration chat members"
+    )
 
 
 class BindChatBody(BaseModel):

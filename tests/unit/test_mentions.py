@@ -1,4 +1,9 @@
-from app.services.im.mentions import extract_mention_open_ids, should_enqueue
+from app.services.bots.models import BotConfig
+from app.services.im.mentions import (
+    extract_mention_open_ids,
+    normalize_inbound_event,
+    should_enqueue,
+)
 from app.services.im.outbound import compose_text
 
 
@@ -28,3 +33,28 @@ def test_compose_text_mentions():
     assert text.startswith('<at user_id="ou_a"></at>')
     assert "hello" in text
     assert compose_text("hi", None) == "hi"
+
+
+def test_normalize_inbound_open_ids():
+    bot = BotConfig(
+        id="gemi",
+        name="Gemi",
+        app_id="cli_x",
+        app_secret="s",
+        open_id="ou_bot",
+        self_open_id="ou_self",
+    )
+    raw = {
+        "message_id": "om_1",
+        "chat_id": "oc_1",
+        "thread_id": "omt_1",
+        "sender_id": "ou_sender",
+        "sender_type": "user",
+        "content": "hi",
+    }
+    payload = normalize_inbound_event(bot, raw)
+    assert payload["bot_open_id"] == "ou_bot"
+    assert payload["self_open_id"] == "ou_self"
+    assert payload["sender_open_id"] == "ou_sender"
+    assert payload["message_id"] == "om_1"
+    assert payload["thread_id"] == "omt_1"

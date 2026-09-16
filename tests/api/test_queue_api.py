@@ -4,17 +4,17 @@ def test_queue_api_flow(client):
         json={"payload": {"t": 1}, "idempotency_key": "api-1"},
     )
     assert r.status_code == 200
-    assert r.json()["job"]["status"] == "pending"
+    assert r.json()["item"]["status"] == "pending"
 
     r = client.post("/queue/inbound/claim", json={"limit": 1, "claimed_by": "test"})
     assert r.status_code == 200
-    jobs = r.json()["jobs"]
-    assert len(jobs) == 1
-    jid = jobs[0]["id"]
+    items = r.json()["items"]
+    assert len(items) == 1
+    iid = items[0]["id"]
 
-    r = client.post("/queue/inbound/ack", json={"id": jid})
+    r = client.post("/queue/inbound/ack", json={"id": iid})
     assert r.status_code == 200
-    assert r.json()["job"]["status"] == "done"
+    assert r.json()["item"]["status"] == "done"
 
     r = client.get("/queue/inbound/stats")
     assert r.status_code == 200
