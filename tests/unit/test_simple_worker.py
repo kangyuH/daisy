@@ -1,7 +1,7 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from workers.client import GatewayError
-from workers.simple_worker import REPLY_TEXT, SimpleWorker
+from workers.simple_worker import PROCESS_SLEEP_SECONDS, REPLY_TEXT, SimpleWorker
 
 
 def _item(payload: dict, item_id: int = 1) -> dict:
@@ -11,20 +11,22 @@ def _item(payload: dict, item_id: int = 1) -> dict:
 def test_simple_worker_at_bot_responds():
     client = MagicMock()
     worker = SimpleWorker(client)
-    result = worker.handle(
-        _item(
-            {
-                "bot_id": "gemi",
-                "message_id": "om_1",
-                "bot_open_id": "ou_bot",
-                "self_open_id": "ou_self",
-                "sender_open_id": "ou_sender",
-                "thread_id": "omt_1",
-                "matched_mentions": ["ou_bot"],
-            }
+    with patch("workers.simple_worker.time.sleep") as mock_sleep:
+        result = worker.handle(
+            _item(
+                {
+                    "bot_id": "gemi",
+                    "message_id": "om_1",
+                    "bot_open_id": "ou_bot",
+                    "self_open_id": "ou_self",
+                    "sender_open_id": "ou_sender",
+                    "thread_id": "omt_1",
+                    "matched_mentions": ["ou_bot"],
+                }
+            )
         )
-    )
     assert result.status == "ok"
+    mock_sleep.assert_called_once_with(PROCESS_SLEEP_SECONDS)
     client.respond.assert_called_once_with(
         inbound_id=1,
         text=REPLY_TEXT,
@@ -32,21 +34,23 @@ def test_simple_worker_at_bot_responds():
     )
 
 
-def test_simple_worker_self_only_skips():
+def test_simple_worker_self_only_skips_without_sleep():
     client = MagicMock()
     worker = SimpleWorker(client)
-    result = worker.handle(
-        _item(
-            {
-                "bot_id": "gemi",
-                "message_id": "om_1",
-                "bot_open_id": "ou_bot",
-                "self_open_id": "ou_self",
-                "matched_mentions": ["ou_self"],
-            }
+    with patch("workers.simple_worker.time.sleep") as mock_sleep:
+        result = worker.handle(
+            _item(
+                {
+                    "bot_id": "gemi",
+                    "message_id": "om_1",
+                    "bot_open_id": "ou_bot",
+                    "self_open_id": "ou_self",
+                    "matched_mentions": ["ou_self"],
+                }
+            )
         )
-    )
     assert result.status == "skip"
+    mock_sleep.assert_not_called()
     client.respond.assert_not_called()
 
 
@@ -62,14 +66,15 @@ def test_simple_worker_502_retry():
     client = MagicMock()
     client.respond.side_effect = GatewayError("boom", status_code=502)
     worker = SimpleWorker(client)
-    result = worker.handle(
-        _item(
-            {
-                "bot_open_id": "ou_bot",
-                "matched_mentions": ["ou_bot"],
-            }
+    with patch("workers.simple_worker.time.sleep"):
+        result = worker.handle(
+            _item(
+                {
+                    "bot_open_id": "ou_bot",
+                    "matched_mentions": ["ou_bot"],
+                }
+            )
         )
-    )
     assert result.status == "retry"
 
 

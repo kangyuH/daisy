@@ -248,8 +248,33 @@ class ItemQueue:
         finally:
             conn.close()
 
+    def _merge_payload_sync(self, item_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        conn = self._connect()
+        try:
+            cur = conn.execute("SELECT * FROM queue_items WHERE id = ?", (item_id,))
+            row = cur.fetchone()
+            if not row:
+                raise KeyError(f"queue item {item_id} not found")
+            item = _row_to_item(row)
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+            merged = {**payload, **patch}
+            conn.execute(
+                "UPDATE queue_items SET payload = ? WHERE id = ?",
+                (json.dumps(merged, ensure_ascii=False), item_id),
+            )
+            conn.commit()
+            cur = conn.execute("SELECT * FROM queue_items WHERE id = ?", (item_id,))
+            return _row_to_item(cur.fetchone())
+        finally:
+            conn.close()
+
     async def get(self, item_id: int) -> dict[str, Any]:
         return await asyncio.to_thread(self._get_sync, item_id)
+
+    async def merge_payload(self, item_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(self._merge_payload_sync, item_id, patch)
 
     async def enqueue(
         self,

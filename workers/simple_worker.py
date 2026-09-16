@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Protocol
 
 from workers.client import GatewayClient, GatewayError
 from workers.result import WorkerResult
 
 REPLY_TEXT = "出来干活"
+PROCESS_SLEEP_SECONDS = 3.0
 
 
 class Worker(Protocol):
@@ -35,6 +37,8 @@ class SimpleWorker:
 
         self_open_id = str(payload.get("self_open_id") or "").strip() or None
         mention_open_ids = [self_open_id] if self_open_id else []
+
+        time.sleep(PROCESS_SLEEP_SECONDS)
 
         try:
             self.client.respond(
