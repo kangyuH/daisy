@@ -15,7 +15,7 @@ class Worker(Protocol):
 
 
 class SimpleWorker:
-    """Minimal worker: @bot → /im/respond(inbound_id, text, @self); @self-only → skip."""
+    """Minimal worker: @bot → /im/respond; @self-only → skip (still sleeps before ack)."""
 
     def __init__(self, client: GatewayClient) -> None:
         self.client = client
@@ -32,13 +32,15 @@ class SimpleWorker:
             matched = []
         matched_ids = {str(x).strip() for x in matched if x}
 
+        # Sleep even on skip so enqueue can finish writing typing_reaction_id
+        # before daemon ack deletes it (avoids stuck Typing emoji).
+        time.sleep(PROCESS_SLEEP_SECONDS)
+
         if not bot_open_id or bot_open_id not in matched_ids:
             return WorkerResult.skip("not @bot")
 
         self_open_id = str(payload.get("self_open_id") or "").strip() or None
         mention_open_ids = [self_open_id] if self_open_id else []
-
-        time.sleep(PROCESS_SLEEP_SECONDS)
 
         try:
             self.client.respond(

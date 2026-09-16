@@ -34,7 +34,7 @@ def test_simple_worker_at_bot_responds():
     )
 
 
-def test_simple_worker_self_only_skips_without_sleep():
+def test_simple_worker_self_only_skips_with_sleep():
     client = MagicMock()
     worker = SimpleWorker(client)
     with patch("workers.simple_worker.time.sleep") as mock_sleep:
@@ -50,7 +50,7 @@ def test_simple_worker_self_only_skips_without_sleep():
             )
         )
     assert result.status == "skip"
-    mock_sleep.assert_not_called()
+    mock_sleep.assert_called_once_with(PROCESS_SLEEP_SECONDS)
     client.respond.assert_not_called()
 
 
