@@ -7,12 +7,14 @@ from typing import Optional
 from fastapi import FastAPI
 
 from app.api.router import api_router
-from app.core.settings import calibration_chat_id, get_settings, load_dotenv
+from app.core.settings import auth_user_open_id, calibration_chat_id, get_settings, load_dotenv
 from app.infra.db import db_path, init_db_sync
 from app.infra.events.manager import BotManager
 from app.services.bots.models import load_bots_from_db
 from app.services.bots.store import BotStore
 from app.services.queue.service import ItemQueue
+from app.services.tasks.store import TaskStore
+from app.services.tasks.workspace import workspace_root
 
 
 class StubBotManager:
@@ -50,13 +52,32 @@ def create_app(*, testing: bool = False) -> FastAPI:
         app.state.queue = ItemQueue(str(path))
         store = BotStore(str(path))
         app.state.bot_store = store
+        ws_root = workspace_root()
+        ws_root.mkdir(parents=True, exist_ok=True)
+        app.state.task_store = TaskStore(str(path), workspace_root=str(ws_root))
         app.state.calibration_chat_id = calibration_chat_id()
+        app.state.task_board_enabled = not testing
 
         if testing:
             app.state.manager = StubBotManager()
             app.state.bots = []
             yield
             return
+
+        # Board posts use CLI default-app bot (Daisy); log user auth only as soft hint.
+        oid = auth_user_open_id()
+        print(
+            "[gateway] task board uses CLI default bot (--as bot, no profile; Daisy)",
+            flush=True,
+        )
+        if oid:
+            print(f"[gateway] lark-cli user also ready open_id={oid}", flush=True)
+        else:
+            print(
+                "[gateway] NOTE: lark-cli user identity unavailable "
+                "(board sync does not require it)",
+                flush=True,
+            )
 
         bots = load_bots_from_db(store)
         app.state.bots = bots

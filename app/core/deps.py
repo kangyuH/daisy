@@ -8,6 +8,7 @@ from app.core.settings import get_settings
 from app.infra.events.manager import BotManager
 from app.services.bots.store import BotStore
 from app.services.queue.service import ItemQueue
+from app.services.tasks.store import TaskStore
 
 
 def check_token(authorization: Optional[str] = Header(default=None)) -> None:
@@ -29,6 +30,13 @@ def get_bot_store(request: Request) -> BotStore:
     st = getattr(request.app.state, "bot_store", None)
     if st is None:
         raise HTTPException(status_code=503, detail="bot_store not ready")
+    return st
+
+
+def get_task_store(request: Request) -> TaskStore:
+    st = getattr(request.app.state, "task_store", None)
+    if st is None:
+        raise HTTPException(status_code=503, detail="task_store not ready")
     return st
 
 

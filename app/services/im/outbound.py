@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
+from app.core.settings import user_cli_profile_args
 from app.infra.lark.cli import LarkCliError, run_cli_async
 
 
@@ -47,28 +48,90 @@ def should_reply_in_thread(thread_id: Optional[str]) -> bool:
     return bool(thread_id and str(thread_id).strip())
 
 
+def _identity_args(*, as_user: bool, profile: Optional[str]) -> list[str]:
+    """Build --as / --profile args.
+
+    as_user=True → user identity (optional LARK_USER_PROFILE).
+    as_user=False + profile → named bot profile (e.g. gemi / 1 / 2).
+    as_user=False + no profile → CLI default app bot (Daisy on this host).
+    """
+    if as_user:
+        return ["--as", "user", *user_cli_profile_args()]
+    args = ["--as", "bot"]
+    if profile:
+        args.extend(["--profile", profile])
+    return args
+
+
+def extract_message_id(result: Any) -> Optional[str]:
+    """Best-effort message_id from lark-cli JSON."""
+    if not isinstance(result, dict):
+        return None
+    for key in ("message_id", "messageId"):
+        val = result.get(key)
+        if val:
+            return str(val).strip() or None
+    data = result.get("data")
+    if isinstance(data, dict):
+        for key in ("message_id", "messageId"):
+            val = data.get(key)
+            if val:
+                return str(val).strip() or None
+        msg = data.get("message")
+        if isinstance(msg, dict):
+            for key in ("message_id", "messageId", "id"):
+                val = msg.get(key)
+                if val:
+                    return str(val).strip() or None
+    return None
+
+
+def extract_thread_id(result: Any) -> Optional[str]:
+    """Best-effort thread_id from lark-cli JSON."""
+    if not isinstance(result, dict):
+        return None
+    for key in ("thread_id", "threadId"):
+        val = result.get(key)
+        if val:
+            return str(val).strip() or None
+    data = result.get("data")
+    if isinstance(data, dict):
+        for key in ("thread_id", "threadId"):
+            val = data.get(key)
+            if val:
+                return str(val).strip() or None
+        msg = data.get("message")
+        if isinstance(msg, dict):
+            for key in ("thread_id", "threadId"):
+                val = msg.get(key)
+                if val:
+                    return str(val).strip() or None
+    return None
+
+
 async def reply_message(
     *,
     message_id: str,
     text: str,
     mention_open_ids: Optional[list[str]] = None,
     reply_in_thread: bool = False,
-    profile: str,
+    profile: Optional[str] = None,
+    as_user: bool = False,
+    markdown: bool = False,
     idempotency_key: Optional[str] = None,
 ) -> dict:
     content = compose_text(text, mention_open_ids)
     args = [
         "im",
         "+messages-reply",
-        "--as",
-        "bot",
-        "--profile",
-        profile,
+        *_identity_args(as_user=as_user, profile=profile),
         "--message-id",
         message_id,
-        "--text",
-        content,
     ]
+    if markdown:
+        args.extend(["--markdown", content])
+    else:
+        args.extend(["--text", content])
     if reply_in_thread:
         args.append("--reply-in-thread")
     if idempotency_key:
@@ -103,22 +166,23 @@ async def send_message(
     chat_id: str,
     text: str,
     mention_open_ids: Optional[list[str]] = None,
-    profile: str,
+    profile: Optional[str] = None,
+    as_user: bool = False,
+    markdown: bool = False,
     idempotency_key: Optional[str] = None,
 ) -> dict:
     content = compose_text(text, mention_open_ids)
     args = [
         "im",
         "+messages-send",
-        "--as",
-        "bot",
-        "--profile",
-        profile,
+        *_identity_args(as_user=as_user, profile=profile),
         "--chat-id",
         chat_id,
-        "--text",
-        content,
     ]
+    if markdown:
+        args.extend(["--markdown", content])
+    else:
+        args.extend(["--text", content])
     if idempotency_key:
         args.extend(["--idempotency-key", idempotency_key[:50]])
     return await run_cli_async(args)
@@ -130,6 +194,8 @@ __all__ = [
     "compose_text",
     "merge_mention_open_ids",
     "should_reply_in_thread",
+    "extract_message_id",
+    "extract_thread_id",
     "reply_message",
     "respond_to_message",
     "send_message",

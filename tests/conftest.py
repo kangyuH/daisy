@@ -14,6 +14,7 @@ from app.infra.db import init_db_sync
 def db_file(tmp_path, monkeypatch):
     path = tmp_path / "test.db"
     monkeypatch.setenv("GATEWAY_DB_PATH", str(path))
+    monkeypatch.setenv("GATEWAY_TASK_WORKSPACE", str(tmp_path / "task_workspace"))
     monkeypatch.setenv("CALIBRATION_CHAT_ID", "oc_calibration_test")
     init_db_sync(path)
     return path
@@ -40,8 +41,9 @@ def seeded_store(store):
 
 
 @pytest.fixture()
-def client(db_file, monkeypatch):
+def client(db_file, monkeypatch, tmp_path):
     monkeypatch.setenv("GATEWAY_DB_PATH", str(db_file))
+    monkeypatch.setenv("GATEWAY_TASK_WORKSPACE", str(tmp_path / "task_workspace"))
     monkeypatch.setenv("CALIBRATION_CHAT_ID", "oc_calibration_test")
     application = create_app(testing=True)
     with TestClient(application) as c:

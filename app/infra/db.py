@@ -56,6 +56,60 @@ CREATE TABLE IF NOT EXISTS bot_chats (
     FOREIGN KEY (bot_id) REFERENCES bots(id)
 );
 CREATE INDEX IF NOT EXISTS idx_bot_chats_bot ON bot_chats(bot_id);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    one_liner TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'noted',
+    bot_id TEXT,
+    chat_id TEXT,
+    thread_id TEXT,
+    project_id TEXT,
+    workspace_path TEXT NOT NULL,
+    created_from_inbound_id INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT,
+    board_chat_id TEXT,
+    board_message_id TEXT,
+    board_thread_id TEXT,
+    board_sync_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status_updated
+    ON tasks(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_chat_status
+    ON tasks(chat_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_thread
+    ON tasks(thread_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_project
+    ON tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_bot
+    ON tasks(bot_id);
+
+CREATE TABLE IF NOT EXISTS task_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT,
+    actor TEXT NOT NULL DEFAULT 'api',
+    inbound_id INTEGER,
+    created_at TEXT NOT NULL,
+    payload_json TEXT,
+    FOREIGN KEY (task_id) REFERENCES tasks(id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_task
+    ON task_events(task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS chat_projects (
+    chat_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    bound_at TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -70,10 +124,29 @@ def init_db_sync(path: Path | None = None) -> Path:
     conn = sqlite3.connect(p)
     try:
         conn.executescript(_SCHEMA)
+        _migrate_tasks_columns(conn)
         conn.commit()
     finally:
         conn.close()
     return p
+
+
+def _migrate_tasks_columns(conn: sqlite3.Connection) -> None:
+    """Existing DBs: ADD COLUMN for fields introduced after first tasks schema."""
+    cur = conn.execute("PRAGMA table_info(tasks)")
+    cols = {str(row[1]) for row in cur.fetchall()}
+    for col, decl in (
+        ("bot_id", "TEXT"),
+        ("board_chat_id", "TEXT"),
+        ("board_message_id", "TEXT"),
+        ("board_thread_id", "TEXT"),
+        ("board_sync_error", "TEXT"),
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {decl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_bot ON tasks(bot_id)"
+    )
 
 
 def connect_sync(path: Path | str | None = None) -> sqlite3.Connection:
