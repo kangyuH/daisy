@@ -4,7 +4,7 @@
 
 ```text
 app/            # Gateway：api / core / services / infra
-workers/        # Daemon（调度）+ SimpleWorker（业务）
+workers/        # Daemon（调度）+ DispatcherWorker / SimpleWorker
 run.py          # 启动 Gateway
 run_worker.py   # 启动 daemon
 ```
@@ -14,7 +14,7 @@ run_worker.py   # 启动 daemon
 ## 依赖
 
 - `lark-cli`（user 已登录，供校准/拉消息）
-- `.venv` + `pip install -r requirements.txt`
+- `.venv` + `pip install -r requirements.txt`（建议清华源：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt`）
 
 ## 启动
 
@@ -31,19 +31,33 @@ cd /share/home/hukangyu/gitlab/lark-superbot
 ```bash
 source .venv/bin/activate
 python run.py          # Gateway :8000
-python run_worker.py   # 另开终端；串行 claim → SimpleWorker
+python run_worker.py   # 另开终端；串行 claim → worker
 ```
 
-环境变量（worker）：`GATEWAY_BASE_URL`（默认 `http://127.0.0.1:8000`）、`GATEWAY_TOKEN`、`WORKER_ID`、`WORKER_IDLE_SLEEP`。
+环境变量（worker）：
+
+| 变量 | 含义 | 默认 |
+|------|------|------|
+| `GATEWAY_BASE_URL` | Gateway 地址 | `http://127.0.0.1:8000` |
+| `GATEWAY_TOKEN` | 可选 Bearer | 空 |
+| `WORKER_ID` | claim 标识 | `daemon-1` |
+| `WORKER_IDLE_SLEEP` | 空闲等待秒 | `1` |
+| `WORKER_IMPL` | `dispatcher` 或 `simple` | `dispatcher` |
+| `DISPATCHER_LLM_PROVIDER` | LLM 厂商 | `deepseek` |
+| `DEEPSEEK_API_KEY` | DeepSeek key | 必填（dispatcher） |
+| `DISPATCHER_LLM_MODEL` | 模型名 | `deepseek-v4-pro` |
+| `DISPATCHER_LLM_BASE_URL` | API base | `https://api.deepseek.com` |
+| `DISPATCHER_AGENT_MAX_ITERATIONS` | Agent 最大工具轮次 | `6` |
 
 ## Daemon vs Worker
 
 | 角色 | 职责 |
 |------|------|
 | **Daemon** | 只 `claim` → 调用 worker → 按结果 `ack/nack`；不做 @bot/@self 判断 |
-| **SimpleWorker** | 读 payload：含 `bot_open_id` 才 `POST /im/respond`；仅 @self 则 skip |
+| **DispatcherWorker**（默认） | LangChain tool-calling Agent：拉上下文、列开放任务、create/followup/noop；**不**回复飞书、不执行业务；强制 `finalize_dispatch` 写入 `dispatch_runs` |
+| **SimpleWorker** | 调试回退：含 `bot_open_id` 才 `POST /im/respond`「出来干活」；仅 @self 则 skip |
 
-本期 SimpleWorker：正文 `出来干活`；`mention_open_ids=[self_open_id]`。`POST /im/respond` 只收 `inbound_id` + text（+ 可选额外 @）；Gateway 查 `queue_items` 自行取 `message_id` / `thread_id` / `sender_open_id` 封装回复。
+Dispatcher 白名单 tools：`fetch_message_context`、`get_chat_project`、`list_open_tasks`、`get_task`、`create_task`、`followup_task`、`finalize_dispatch`。无 `respond`/`send`/`reply`。
 
 ## 测试
 
@@ -59,6 +73,7 @@ pytest -q
   - register 只需 `app_id`/`app_secret`；`id` 省略则数字自增（`1,2,3…`，同 app_id 复用）；`name` 省略则从校准群成员列表自动取 bot 显示名
 - `POST /queue/{name}/enqueue|claim|ack|nack` · `GET /queue/{name}/stats`（返回 `item`/`items`，表名 `queue_items`；`inbound`=消息队列）
 - `POST /tasks` · `GET /tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/followups`（任务元信息在 SQLite，工作区在 `data/task_workspace/<id>/`；跟进 append-only）
+- `POST /dispatcher/runs` · `GET /dispatcher/runs/{inbound_id}`（分发员留痕，按 inbound 幂等）
 - `PUT|GET|DELETE /chat-projects/{chat_id}` · `GET /chat-projects`（群聊绑定 `knowledge/projects` 的 `project_id`；建任务未显式传 project 时继承）
 - `POST /im/send` · `/im/reply` · `/im/respond` · `/im/messages/context`
 - `GET /health`

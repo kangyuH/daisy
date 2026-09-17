@@ -110,6 +110,19 @@ CREATE TABLE IF NOT EXISTS chat_projects (
     bound_at TEXT NOT NULL,
     note TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS dispatch_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    inbound_id INTEGER NOT NULL UNIQUE,
+    decision TEXT NOT NULL,
+    task_id INTEGER,
+    reason TEXT NOT NULL,
+    evidence_json TEXT,
+    actor TEXT NOT NULL DEFAULT 'dispatcher',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_runs_created
+    ON dispatch_runs(created_at);
 """
 
 

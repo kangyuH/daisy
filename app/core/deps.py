@@ -7,6 +7,7 @@ from fastapi import Header, HTTPException, Request
 from app.core.settings import get_settings
 from app.infra.events.manager import BotManager
 from app.services.bots.store import BotStore
+from app.services.dispatcher.store import DispatchRunStore
 from app.services.queue.service import ItemQueue
 from app.services.tasks.store import TaskStore
 
@@ -37,6 +38,13 @@ def get_task_store(request: Request) -> TaskStore:
     st = getattr(request.app.state, "task_store", None)
     if st is None:
         raise HTTPException(status_code=503, detail="task_store not ready")
+    return st
+
+
+def get_dispatch_run_store(request: Request) -> DispatchRunStore:
+    st = getattr(request.app.state, "dispatch_run_store", None)
+    if st is None:
+        raise HTTPException(status_code=503, detail="dispatch_run_store not ready")
     return st
 
 

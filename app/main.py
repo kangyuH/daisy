@@ -12,6 +12,7 @@ from app.infra.db import db_path, init_db_sync
 from app.infra.events.manager import BotManager
 from app.services.bots.models import load_bots_from_db
 from app.services.bots.store import BotStore
+from app.services.dispatcher.store import DispatchRunStore
 from app.services.queue.service import ItemQueue
 from app.services.tasks.store import TaskStore
 from app.services.tasks.workspace import workspace_root
@@ -55,6 +56,7 @@ def create_app(*, testing: bool = False) -> FastAPI:
         ws_root = workspace_root()
         ws_root.mkdir(parents=True, exist_ok=True)
         app.state.task_store = TaskStore(str(path), workspace_root=str(ws_root))
+        app.state.dispatch_run_store = DispatchRunStore(str(path))
         app.state.calibration_chat_id = calibration_chat_id()
         app.state.task_board_enabled = not testing
 

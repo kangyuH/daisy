@@ -6,6 +6,7 @@ from typing import Optional
 
 from app.services.queue.service import QUEUE_INBOUND
 from workers.client import GatewayClient, GatewayError
+from workers.dispatcher import DispatcherWorker
 from workers.result import WorkerResult
 from workers.simple_worker import SimpleWorker, Worker
 
@@ -90,6 +91,16 @@ def build_daemon_from_env() -> Daemon:
     token = os.environ.get("GATEWAY_TOKEN", "").strip()
     worker_id = os.environ.get("WORKER_ID", "daemon-1").strip() or "daemon-1"
     idle = float(os.environ.get("WORKER_IDLE_SLEEP", "1") or "1")
+    impl = (
+        os.environ.get("WORKER_IMPL", "dispatcher").strip().lower() or "dispatcher"
+    )
     client = GatewayClient(base, token=token)
-    worker = SimpleWorker(client)
+    if impl == "simple":
+        worker: Worker = SimpleWorker(client)
+    elif impl == "dispatcher":
+        worker = DispatcherWorker(client)
+    else:
+        raise ValueError(
+            f"unknown WORKER_IMPL={impl!r}; supported: dispatcher, simple"
+        )
     return Daemon(client, worker, worker_id=worker_id, idle_sleep=idle)
