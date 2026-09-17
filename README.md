@@ -103,7 +103,7 @@ pytest -q
 
 终态 `done`/`cancelled` 后仍可追加 note，不可再改 status（409）。  
 `bot_id` 可选：显式传入优先；未传但有 `chat_id` 且该群在 `bot_chats` 有绑定则继承。  
-**台账同步**：创建/跟进后用 lark-cli **默认 app 的 bot 身份**（本机即 Daisy，`--as bot` 且不带 `--profile`）在校准群发根消息并开 thread；正文走 `--markdown`。字段为 `board_message_id` / `board_thread_id`。飞书失败不阻断落库，记 `board_sync_error`，后续 followup 会尝试补建。与任务业务 `bot_id` 无关，无需把 Daisy 注册进 Gateway `bots` 表。
+**台账同步**：创建/跟进后用 lark-cli **默认 app 的 bot 身份**（本机即 Daisy，`--as bot` 且不带 `--profile`）在校准群发根消息并开 thread；正文走 `--markdown`。开 thread 的那条消息会 `@` lark-cli 登录用户（`auth status` 的 user open_id），根消息不 @。字段为 `board_message_id` / `board_thread_id`。飞书失败不阻断落库，记 `board_sync_error`，后续 followup 会尝试补建。与任务业务 `bot_id` 无关，无需把 Daisy 注册进 Gateway `bots` 表。
 环境变量：`GATEWAY_TASK_WORKSPACE`（默认 `data/task_workspace`）。
 
 `/im/respond`：`{"inbound_id", "text", "mention_open_ids?"}` — 按入库 payload 的 `thread_id` 自动话题/引用回复；`sender_open_id` 置顶去重。底层 `/im/reply` 仍保留供排障。

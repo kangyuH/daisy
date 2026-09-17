@@ -59,6 +59,7 @@ def create_app(*, testing: bool = False) -> FastAPI:
         app.state.dispatch_run_store = DispatchRunStore(str(path))
         app.state.calibration_chat_id = calibration_chat_id()
         app.state.task_board_enabled = not testing
+        app.state.auth_user_open_id = None
 
         if testing:
             app.state.manager = StubBotManager()
@@ -66,18 +67,22 @@ def create_app(*, testing: bool = False) -> FastAPI:
             yield
             return
 
-        # Board posts use CLI default-app bot (Daisy); log user auth only as soft hint.
+        # Board posts use CLI default-app bot (Daisy); user open_id is for @ in thread.
         oid = auth_user_open_id()
+        app.state.auth_user_open_id = oid
         print(
             "[gateway] task board uses CLI default bot (--as bot, no profile; Daisy)",
             flush=True,
         )
         if oid:
-            print(f"[gateway] lark-cli user also ready open_id={oid}", flush=True)
+            print(
+                f"[gateway] board thread will @ user open_id={oid}",
+                flush=True,
+            )
         else:
             print(
-                "[gateway] NOTE: lark-cli user identity unavailable "
-                "(board sync does not require it)",
+                "[gateway] NOTE: lark-cli user identity unavailable; "
+                "board thread will be created without @user",
                 flush=True,
             )
 

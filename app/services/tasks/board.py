@@ -58,10 +58,15 @@ class TaskBoardSync:
         *,
         chat_id: Optional[str] = None,
         enabled: bool = True,
+        mention_user_open_id: Optional[str] = None,
     ) -> None:
         self.store = store
         self.chat_id = (chat_id or calibration_chat_id()).strip()
         self.enabled = enabled
+        self.mention_user_open_id = (mention_user_open_id or "").strip() or None
+
+    def _thread_mentions(self) -> list[str]:
+        return [self.mention_user_open_id] if self.mention_user_open_id else []
 
     async def ensure_board(self, task: dict[str, Any]) -> dict[str, Any]:
         """Create root + open thread if missing. Never raises; returns board_sync info."""
@@ -97,6 +102,7 @@ class TaskBoardSync:
             reply_res = await reply_message(
                 message_id=root_mid,
                 text=_board_open_thread_text(task),
+                mention_open_ids=self._thread_mentions(),
                 reply_in_thread=True,
                 as_user=False,
                 profile=None,

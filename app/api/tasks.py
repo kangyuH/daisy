@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.core.deps import check_token, get_task_store
+from app.core.settings import auth_user_open_id
 from app.services.tasks.board import TaskBoardSync
 from app.services.tasks.models import (
     EVENT_NOTE,
@@ -17,10 +18,24 @@ from app.services.tasks.store import TaskStore
 router = APIRouter(tags=["tasks"])
 
 
+def _resolve_board_mention_open_id(request: Request) -> Optional[str]:
+    if hasattr(request.app.state, "auth_user_open_id"):
+        cached = getattr(request.app.state, "auth_user_open_id")
+        return str(cached or "").strip() or None
+    oid = auth_user_open_id()
+    request.app.state.auth_user_open_id = oid
+    return oid
+
+
 def _board_sync(request: Request, store: TaskStore) -> TaskBoardSync:
     enabled = bool(getattr(request.app.state, "task_board_enabled", True))
     chat_id = getattr(request.app.state, "calibration_chat_id", None)
-    return TaskBoardSync(store, chat_id=chat_id, enabled=enabled)
+    return TaskBoardSync(
+        store,
+        chat_id=chat_id,
+        enabled=enabled,
+        mention_user_open_id=_resolve_board_mention_open_id(request),
+    )
 
 
 class CreateTaskBody(BaseModel):

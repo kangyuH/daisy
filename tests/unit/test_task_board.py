@@ -43,7 +43,12 @@ async def test_ensure_board_success(task_store: TaskStore, monkeypatch):
     monkeypatch.setattr("app.services.tasks.board.send_message", fake_send)
     monkeypatch.setattr("app.services.tasks.board.reply_message", fake_reply)
 
-    board = TaskBoardSync(task_store, chat_id="oc_calib", enabled=True)
+    board = TaskBoardSync(
+        task_store,
+        chat_id="oc_calib",
+        enabled=True,
+        mention_user_open_id="ou_user",
+    )
     result = await board.ensure_board(task)
     assert result["ok"] is True
     assert result["board_message_id"] == "om_root"
@@ -51,10 +56,12 @@ async def test_ensure_board_success(task_store: TaskStore, monkeypatch):
     assert calls[0][0] == "send"
     assert calls[0][1].get("as_user") is False
     assert calls[0][1].get("markdown") is True
+    assert calls[0][1].get("mention_open_ids") in (None, [])
     assert calls[1][0] == "reply"
     assert calls[1][1]["reply_in_thread"] is True
     assert calls[1][1].get("as_user") is False
     assert calls[1][1].get("markdown") is True
+    assert calls[1][1].get("mention_open_ids") == ["ou_user"]
 
     fresh = task_store.get_task(int(task["id"]))
     assert fresh["board_message_id"] == "om_root"
@@ -87,11 +94,11 @@ async def test_followup_backfills_board(task_store: TaskStore, monkeypatch):
     calls = []
 
     async def fake_send(**kwargs):
-        calls.append("send")
+        calls.append(("send", kwargs))
         return {"data": {"message_id": "om_root"}}
 
     async def fake_reply(**kwargs):
-        calls.append("reply")
+        calls.append(("reply", kwargs))
         if len(calls) == 2:
             return {"data": {"message_id": "om_open", "thread_id": "omt_x"}}
         return {"data": {"message_id": "om_fu", "thread_id": "omt_x"}}
@@ -99,10 +106,39 @@ async def test_followup_backfills_board(task_store: TaskStore, monkeypatch):
     monkeypatch.setattr("app.services.tasks.board.send_message", fake_send)
     monkeypatch.setattr("app.services.tasks.board.reply_message", fake_reply)
 
-    board = TaskBoardSync(task_store, chat_id="oc_calib", enabled=True)
+    board = TaskBoardSync(
+        task_store,
+        chat_id="oc_calib",
+        enabled=True,
+        mention_user_open_id="ou_user",
+    )
     result = await board.sync_followup(fu["task"], fu["event"])
     assert result["ok"] is True
-    assert calls == ["send", "reply", "reply"]
+    assert [c[0] for c in calls] == ["send", "reply", "reply"]
+    assert calls[1][1].get("mention_open_ids") == ["ou_user"]
+    assert calls[2][1].get("mention_open_ids") in (None, [])
     fresh = task_store.get_task(int(task["id"]))
     assert fresh["board_message_id"] == "om_root"
     assert fresh["status"] == "waiting_human"
+
+
+@pytest.mark.asyncio
+async def test_ensure_board_skips_mention_without_user(task_store: TaskStore, monkeypatch):
+    task = task_store.create_task(title="t", kind="readonly")
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(("send", kwargs))
+        return {"data": {"message_id": "om_root"}}
+
+    async def fake_reply(**kwargs):
+        calls.append(("reply", kwargs))
+        return {"data": {"message_id": "om_open", "thread_id": "omt_board"}}
+
+    monkeypatch.setattr("app.services.tasks.board.send_message", fake_send)
+    monkeypatch.setattr("app.services.tasks.board.reply_message", fake_reply)
+
+    board = TaskBoardSync(task_store, chat_id="oc_calib", enabled=True)
+    result = await board.ensure_board(task)
+    assert result["ok"] is True
+    assert calls[1][1].get("mention_open_ids") == []
