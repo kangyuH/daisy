@@ -50,7 +50,7 @@ def _followup_text(event: dict[str, Any]) -> str:
 
 
 class TaskBoardSync:
-    """Sync task ledger posts to calibration chat as CLI default bot (Daisy)."""
+    """Sync task ledger posts to calibration chat as CLI default-app bot."""
 
     def __init__(
         self,
@@ -84,7 +84,7 @@ class TaskBoardSync:
             }
 
         try:
-            # Default CLI app bot (Daisy) — as_user=False, no --profile.
+            # CLI default app bot — as_user=False, no --profile.
             send_res = await send_message(
                 chat_id=self.chat_id,
                 text=_board_root_text(task),

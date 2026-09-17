@@ -52,8 +52,8 @@ def _identity_args(*, as_user: bool, profile: Optional[str]) -> list[str]:
     """Build --as / --profile args.
 
     as_user=True → user identity (optional LARK_USER_PROFILE).
-    as_user=False + profile → named bot profile (e.g. gemi / 1 / 2).
-    as_user=False + no profile → CLI default app bot (Daisy on this host).
+    as_user=False + profile → named bot profile (Gateway bot id / lark-cli profile).
+    as_user=False + no profile → CLI default-app bot.
     """
     if as_user:
         return ["--as", "user", *user_cli_profile_args()]

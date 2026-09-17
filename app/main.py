@@ -7,7 +7,12 @@ from typing import Optional
 from fastapi import FastAPI
 
 from app.api.router import api_router
-from app.core.settings import auth_user_open_id, calibration_chat_id, get_settings, load_dotenv
+from app.core.settings import (
+    auth_user_open_id,
+    get_settings,
+    load_dotenv,
+    require_calibration_chat_id,
+)
 from app.infra.db import db_path, init_db_sync
 from app.infra.events.manager import BotManager
 from app.services.bots.models import load_bots_from_db
@@ -57,21 +62,26 @@ def create_app(*, testing: bool = False) -> FastAPI:
         ws_root.mkdir(parents=True, exist_ok=True)
         app.state.task_store = TaskStore(str(path), workspace_root=str(ws_root))
         app.state.dispatch_run_store = DispatchRunStore(str(path))
-        app.state.calibration_chat_id = calibration_chat_id()
         app.state.task_board_enabled = not testing
         app.state.auth_user_open_id = None
 
         if testing:
+            from app.core.settings import calibration_chat_id
+
+            app.state.calibration_chat_id = calibration_chat_id()
             app.state.manager = StubBotManager()
             app.state.bots = []
             yield
             return
 
-        # Board posts use CLI default-app bot (Daisy); user open_id is for @ in thread.
+        app.state.calibration_chat_id = require_calibration_chat_id()
+
+        # Board posts use CLI default-app bot (--as bot, no --profile);
+        # user open_id is for @ in the board thread opener.
         oid = auth_user_open_id()
         app.state.auth_user_open_id = oid
         print(
-            "[gateway] task board uses CLI default bot (--as bot, no profile; Daisy)",
+            "[gateway] task board uses CLI default bot (--as bot, no --profile)",
             flush=True,
         )
         if oid:

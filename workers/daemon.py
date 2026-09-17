@@ -86,6 +86,19 @@ class Daemon:
             print(f"[daemon] finish inbound_id={item_id} failed: {exc}", flush=True)
 
 
+def _require_dispatcher_llm_key() -> None:
+    """Fail fast when dispatcher has no DeepSeek / generic LLM key."""
+    key = (
+        os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        or os.environ.get("DISPATCHER_LLM_API_KEY", "").strip()
+    )
+    if not key:
+        raise ValueError(
+            "DEEPSEEK_API_KEY is required when WORKER_IMPL=dispatcher "
+            "(or set DISPATCHER_LLM_API_KEY)"
+        )
+
+
 def build_daemon_from_env() -> Daemon:
     base = os.environ.get("GATEWAY_BASE_URL", "http://127.0.0.1:8000").strip()
     token = os.environ.get("GATEWAY_TOKEN", "").strip()
@@ -98,6 +111,7 @@ def build_daemon_from_env() -> Daemon:
     if impl == "simple":
         worker: Worker = SimpleWorker(client)
     elif impl == "dispatcher":
+        _require_dispatcher_llm_key()
         worker = DispatcherWorker(client)
     else:
         raise ValueError(

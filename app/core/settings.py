@@ -6,8 +6,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_ENV = ROOT / ".env"
-DEFAULT_CALIBRATION_CHAT_ID = "oc_b5c7c2ad2f8c14229a68b15493926329"
 DEFAULT_EVENT_KEY = "im.message.receive_v1"
+
+
+class SettingsError(ValueError):
+    """Missing or invalid runtime configuration."""
 
 
 def load_dotenv(path: Path = DEFAULT_ENV) -> None:
@@ -28,9 +31,9 @@ class Settings:
     gateway_db_path: str = ""
     gateway_base_url: str = ""
     gateway_token: str = ""
-    calibration_chat_id: str = DEFAULT_CALIBRATION_CHAT_ID
+    calibration_chat_id: str = ""
     lark_user_profile: str = ""
-    default_bot_id: str = "gemi"
+    default_bot_id: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -41,12 +44,9 @@ class Settings:
             gateway_db_path=os.environ.get("GATEWAY_DB_PATH", "").strip(),
             gateway_base_url=os.environ.get("GATEWAY_BASE_URL", "").strip(),
             gateway_token=os.environ.get("GATEWAY_TOKEN", "").strip(),
-            calibration_chat_id=(
-                os.environ.get("CALIBRATION_CHAT_ID", "").strip()
-                or DEFAULT_CALIBRATION_CHAT_ID
-            ),
+            calibration_chat_id=os.environ.get("CALIBRATION_CHAT_ID", "").strip(),
             lark_user_profile=os.environ.get("LARK_USER_PROFILE", "").strip(),
-            default_bot_id=os.environ.get("DEFAULT_BOT_ID", "gemi").strip() or "gemi",
+            default_bot_id=os.environ.get("DEFAULT_BOT_ID", "").strip(),
         )
 
 
@@ -56,6 +56,17 @@ def get_settings() -> Settings:
 
 def calibration_chat_id() -> str:
     return get_settings().calibration_chat_id
+
+
+def require_calibration_chat_id() -> str:
+    """Return CALIBRATION_CHAT_ID or raise SettingsError if unset."""
+    chat_id = calibration_chat_id()
+    if not chat_id:
+        raise SettingsError(
+            "CALIBRATION_CHAT_ID is required "
+            "(set it in .env or the environment; no built-in default)"
+        )
+    return chat_id
 
 
 def gateway_base_url() -> str:
