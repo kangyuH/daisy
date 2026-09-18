@@ -31,11 +31,11 @@ def build_ack_text(decision: str, title: Optional[str] = None) -> str:
     t = _trim_title(title or "")
     if decision == "create":
         if t:
-            return f"收到，已创建任务「{t}」。我们将安排专人为您处狸，请您耐心等待。"
+            return f"收到，已狸解您的需求并创建任务「{t}」。我们将安排专人为您处狸，请您耐心等待。"
         return "收到，已创建任务。"
     if decision == "followup":
         if t:
-            return f"收到，已跟进任务「{t}」。我们将安排专人为您处狸，请您耐心等待。"
+            return f"收到，已狸解您的需求并跟进任务「{t}」。我们将安排专人为您处狸，请您耐心等待。"
         return "收到，已跟进该任务。"
     raise ValueError(f"unsupported ack decision: {decision!r}")
 
