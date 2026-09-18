@@ -221,6 +221,59 @@ class GatewayClient:
             "POST", f"/tasks/{int(task_id)}/followups", json=body
         )
 
+    def upsert_clue(
+        self,
+        task_id: int,
+        *,
+        kind: str,
+        ref_key: str,
+        one_liner: Optional[str] = None,
+        relevance: Optional[str] = None,
+        demote: bool = False,
+        actor: str = "dispatcher",
+        extra: Any = None,
+    ) -> dict:
+        body: dict[str, Any] = {
+            "kind": kind,
+            "ref_key": ref_key,
+            "actor": actor,
+            "demote": demote,
+        }
+        if one_liner is not None:
+            body["one_liner"] = one_liner
+        if relevance is not None:
+            body["relevance"] = relevance
+        if extra is not None:
+            body["extra"] = extra
+        return self._request(
+            "POST", f"/tasks/{int(task_id)}/clues", json=body
+        )
+
+    def list_clues(
+        self,
+        task_id: int,
+        *,
+        min_relevance: Optional[str] = None,
+    ) -> list:
+        q = ""
+        if min_relevance:
+            q = f"?{urlencode({'min_relevance': min_relevance})}"
+        data = self._request("GET", f"/tasks/{int(task_id)}/clues{q}")
+        return list(data.get("clues") or [])
+
+    def find_clues(
+        self,
+        *,
+        kind: str,
+        ref_key: str,
+        min_relevance: Optional[str] = None,
+    ) -> list:
+        q: dict[str, str] = {"kind": kind, "ref_key": ref_key}
+        if min_relevance:
+            q["min_relevance"] = min_relevance
+        data = self._request("GET", f"/clues?{urlencode(q)}")
+        return list(data.get("clues") or [])
+
     def get_dispatch_run(self, inbound_id: int) -> Optional[dict]:
         try:
             data = self._request("GET", f"/dispatcher/runs/{int(inbound_id)}")

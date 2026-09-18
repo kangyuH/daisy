@@ -6,12 +6,16 @@ from typing import Any, Optional
 
 from app.infra.db import connect_sync
 from app.services.tasks.models import (
+    DEFAULT_CLUE_RELEVANCE,
     EVENT_CREATED,
     EVENT_NOTE,
     STATUS_NOTED,
     TaskConflictError,
     TaskValidationError,
+    clue_relevance_rank,
     is_terminal,
+    validate_clue_kind,
+    validate_clue_relevance,
     validate_followup_event_type,
     validate_kind,
     validate_status,
@@ -44,6 +48,33 @@ def _row_event(row: Any) -> dict[str, Any]:
 
 def _row_chat_project(row: Any) -> dict[str, Any]:
     return dict(row)
+
+
+def _row_clue(row: Any) -> dict[str, Any]:
+    d = dict(row)
+    raw = d.pop("extra_json", None)
+    if raw:
+        try:
+            d["extra"] = json.loads(raw)
+        except json.JSONDecodeError:
+            d["extra"] = raw
+    else:
+        d["extra"] = None
+    return d
+
+
+def _sorted_clues(clues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """relevance high→low, then updated_at newest first."""
+    return sorted(
+        clues,
+        key=lambda c: (
+            clue_relevance_rank(
+                str(c.get("relevance") or DEFAULT_CLUE_RELEVANCE)
+            ),
+            str(c.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
 
 
 class TaskStore:
@@ -300,6 +331,7 @@ class TaskStore:
             task["events"] = self._list_events_conn(
                 conn, task_id, limit=events_limit
             )
+            task["clues"] = self._list_clues_conn(conn, task_id)
             return task
         finally:
             conn.close()
@@ -467,6 +499,216 @@ class TaskStore:
             actor=actor_s,
         )
         return {"task": task, "event": event}
+
+    # --- clues ---
+
+    def upsert_clue(
+        self,
+        task_id: int,
+        *,
+        kind: str,
+        ref_key: str,
+        one_liner: Optional[str] = None,
+        relevance: Optional[str] = None,
+        demote: bool = False,
+        actor: str = "api",
+        extra: Any = None,
+    ) -> dict[str, Any]:
+        kind_s = validate_clue_kind(kind)
+        key_s = (ref_key or "").strip()
+        if not key_s:
+            raise TaskValidationError("ref_key is required")
+        actor_s = (actor or "api").strip() or "api"
+        now = _now_iso()
+        extra_s = (
+            json.dumps(extra, ensure_ascii=False) if extra is not None else None
+        )
+        new_rel = (
+            validate_clue_relevance(relevance)
+            if relevance is not None
+            else None
+        )
+
+        conn = self._connect()
+        try:
+            task = self._get_task_conn(conn, task_id)
+            if not task:
+                raise KeyError(f"task {task_id} not found")
+
+            cur = conn.execute(
+                """
+                SELECT * FROM task_clues
+                WHERE task_id = ? AND kind = ? AND ref_key = ?
+                """,
+                (task_id, kind_s, key_s),
+            )
+            existing = cur.fetchone()
+            created = existing is None
+
+            if created:
+                rel_s = new_rel or DEFAULT_CLUE_RELEVANCE
+                one_s = (one_liner or "").strip() if one_liner is not None else ""
+                cur = conn.execute(
+                    """
+                    INSERT INTO task_clues (
+                        task_id, kind, ref_key, one_liner, relevance,
+                        actor, created_at, updated_at, extra_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_id,
+                        kind_s,
+                        key_s,
+                        one_s,
+                        rel_s,
+                        actor_s,
+                        now,
+                        now,
+                        extra_s,
+                    ),
+                )
+                clue_id = int(cur.lastrowid)
+            else:
+                old = _row_clue(existing)
+                one_s = (
+                    (one_liner or "").strip()
+                    if one_liner is not None
+                    else str(old.get("one_liner") or "")
+                )
+                old_rel = validate_clue_relevance(
+                    str(old.get("relevance") or DEFAULT_CLUE_RELEVANCE)
+                )
+                if new_rel is None:
+                    rel_s = old_rel
+                elif (
+                    not demote
+                    and clue_relevance_rank(new_rel)
+                    < clue_relevance_rank(old_rel)
+                ):
+                    rel_s = old_rel
+                else:
+                    rel_s = new_rel
+                if extra is None:
+                    extra_keep = existing["extra_json"]
+                else:
+                    extra_keep = extra_s
+                clue_id = int(old["id"])
+                conn.execute(
+                    """
+                    UPDATE task_clues
+                    SET one_liner = ?, relevance = ?, actor = ?,
+                        updated_at = ?, extra_json = ?
+                    WHERE id = ?
+                    """,
+                    (one_s, rel_s, actor_s, now, extra_keep, clue_id),
+                )
+
+            conn.commit()
+            clue = self._get_clue_conn(conn, clue_id)
+            assert clue is not None
+            clues_snapshot = self._list_clues_conn(conn, task_id)
+        finally:
+            conn.close()
+
+        self.workspace.write_clues(task_id, clues_snapshot)
+        return {"clue": clue, "created": created}
+
+    def list_clues(
+        self,
+        task_id: int,
+        *,
+        min_relevance: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if not self._get_task_conn(conn, task_id):
+                raise KeyError(f"task {task_id} not found")
+            return self._list_clues_conn(
+                conn, task_id, min_relevance=min_relevance
+            )
+        finally:
+            conn.close()
+
+    def get_clue(
+        self, clue_id: int, *, task_id: Optional[int] = None
+    ) -> Optional[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            clue = self._get_clue_conn(conn, clue_id)
+            if not clue:
+                return None
+            if task_id is not None and int(clue["task_id"]) != int(task_id):
+                return None
+            return clue
+        finally:
+            conn.close()
+
+    def find_clues(
+        self,
+        *,
+        kind: str,
+        ref_key: str,
+        min_relevance: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        kind_s = validate_clue_kind(kind)
+        key_s = (ref_key or "").strip()
+        if not key_s:
+            raise TaskValidationError("ref_key is required")
+        min_rank: Optional[int] = None
+        if min_relevance is not None:
+            min_rank = clue_relevance_rank(min_relevance)
+
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """
+                SELECT c.*, t.title AS task_title, t.status AS task_status
+                FROM task_clues c
+                JOIN tasks t ON t.id = c.task_id
+                WHERE c.kind = ? AND c.ref_key = ?
+                """,
+                (kind_s, key_s),
+            )
+            out: list[dict[str, Any]] = []
+            for row in cur.fetchall():
+                clue = _row_clue(row)
+                clue["task_title"] = row["task_title"]
+                clue["task_status"] = row["task_status"]
+                if min_rank is not None:
+                    if clue_relevance_rank(str(clue["relevance"])) < min_rank:
+                        continue
+                out.append(clue)
+            return _sorted_clues(out)
+        finally:
+            conn.close()
+
+    def _get_clue_conn(self, conn, clue_id: int) -> Optional[dict[str, Any]]:
+        cur = conn.execute("SELECT * FROM task_clues WHERE id = ?", (clue_id,))
+        row = cur.fetchone()
+        return _row_clue(row) if row else None
+
+    def _list_clues_conn(
+        self,
+        conn,
+        task_id: int,
+        *,
+        min_relevance: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        min_rank: Optional[int] = None
+        if min_relevance is not None:
+            min_rank = clue_relevance_rank(min_relevance)
+        cur = conn.execute(
+            "SELECT * FROM task_clues WHERE task_id = ?",
+            (task_id,),
+        )
+        clues = [_row_clue(r) for r in cur.fetchall()]
+        if min_rank is not None:
+            clues = [
+                c
+                for c in clues
+                if clue_relevance_rank(str(c["relevance"])) >= min_rank
+            ]
+        return _sorted_clues(clues)
 
     def update_board_fields(
         self,

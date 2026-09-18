@@ -121,3 +121,13 @@ class TaskWorkspace:
         )
         with md.open("a", encoding="utf-8") as f:
             f.write(line)
+
+    def write_clues(self, task_id: int, clues: list[dict[str, Any]]) -> None:
+        """Overwrite clues.json snapshot (not append-only TASK.md)."""
+        d = self.task_dir(task_id)
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / "clues.json"
+        path.write_text(
+            json.dumps(clues, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )

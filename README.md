@@ -266,6 +266,17 @@ curl -sS -H 'Content-Type: application/json' \
 终态 `done` / `cancelled` 后仍可追加 note，不可再改 status（HTTP 409）。  
 台账飞书失败不阻断落库，会记 `board_sync_error`，后续 followup 会尝试补建。
 
+### 任务线索（clues）
+
+线索是任务相关材料的索引（Cursor 会话、飞书消息、仓库等），**不是** followup，**不同步台账**。同一任务可挂多条；同一线索也可挂到多个任务。
+
+| 字段 | 说明 |
+|------|------|
+| `kind` | `cursor_session` / `lark_thread` / `lark_message` / `git_repo` |
+| `ref_key` | 该类型下的稳定主键（如 `CURSOR_CONVERSATION_ID`） |
+| `one_liner` | 这线索在本任务里干了什么（可更新） |
+| `relevance` | `primary` > `related` > `weak`；新建默认 `related`；upsert 默认只升不降（除非 `demote=true`） |
+
 ## Worker 模式
 
 | 模式 | 职责 |
@@ -283,6 +294,7 @@ Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_o
 | `POST /bots/register` · `GET /bots` · `GET /bots/{id}` | 注册 / 列表 / 详情 |
 | `POST /bots/{id}/chats` | 绑定业务群 |
 | `POST /tasks` · `GET /tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/followups` | 任务 |
+| `POST /tasks/{id}/clues` · `GET /tasks/{id}/clues` · `GET /tasks/{id}/clues/{clue_id}` · `GET /clues?kind=&ref_key=` | 任务线索索引（读写） |
 | `PUT\|GET\|DELETE /chat-projects/{chat_id}` · `GET /chat-projects` | 群 ↔ 项目 |
 | `POST /dispatcher/runs` · `GET /dispatcher/runs/{inbound_id}` | 分发留痕 |
 | `POST /im/send` · `/im/reply` · `/im/respond` · `/im/messages/context` | 发消息 / 按 inbound 回复 / 拉上下文 |

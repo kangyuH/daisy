@@ -153,3 +153,86 @@ def test_bot_id_explicit_and_inherit(task_store: TaskStore):
 
     bare = task_store.create_task(title="无会话", kind="readonly")
     assert bare["bot_id"] is None
+
+
+def test_upsert_clue_and_demotion_guard(task_store: TaskStore):
+    task = task_store.create_task(title="线索任务", kind="readonly")
+    tid = int(task["id"])
+
+    r1 = task_store.upsert_clue(
+        tid,
+        kind="cursor_session",
+        ref_key="sess-a",
+        one_liner="拉取上下文",
+        relevance="primary",
+        actor="agent",
+    )
+    assert r1["created"] is True
+    assert r1["clue"]["relevance"] == "primary"
+    assert r1["clue"]["one_liner"] == "拉取上下文"
+
+    ws = Path(task["workspace_path"])
+    assert (ws / "clues.json").is_file()
+    snap = json.loads((ws / "clues.json").read_text(encoding="utf-8"))
+    assert len(snap) == 1
+
+    # default no demote: weak must not overwrite primary
+    r2 = task_store.upsert_clue(
+        tid,
+        kind="cursor_session",
+        ref_key="sess-a",
+        one_liner="历史零星提及",
+        relevance="weak",
+        actor="research",
+    )
+    assert r2["created"] is False
+    assert r2["clue"]["relevance"] == "primary"
+    assert r2["clue"]["one_liner"] == "历史零星提及"
+
+    r3 = task_store.upsert_clue(
+        tid,
+        kind="cursor_session",
+        ref_key="sess-a",
+        relevance="weak",
+        demote=True,
+        actor="human",
+    )
+    assert r3["clue"]["relevance"] == "weak"
+
+    # second clue; list sorts primary before weak
+    task_store.upsert_clue(
+        tid,
+        kind="cursor_session",
+        ref_key="sess-b",
+        one_liner="主会话",
+        relevance="primary",
+    )
+    clues = task_store.list_clues(tid)
+    assert [c["ref_key"] for c in clues] == ["sess-b", "sess-a"]
+    filtered = task_store.list_clues(tid, min_relevance="related")
+    assert all(c["relevance"] != "weak" for c in filtered)
+    assert len(filtered) == 1
+
+    found = task_store.find_clues(kind="cursor_session", ref_key="sess-b")
+    assert len(found) == 1
+    assert found[0]["task_id"] == tid
+    assert found[0]["task_title"] == "线索任务"
+
+    got = task_store.get_task(tid)
+    assert "clues" in got
+    assert len(got["clues"]) == 2
+
+
+def test_clue_invalid_kind(task_store: TaskStore):
+    task = task_store.create_task(title="x", kind="readonly")
+    with pytest.raises(TaskValidationError):
+        task_store.upsert_clue(
+            int(task["id"]), kind="email", ref_key="x"
+        )
+
+
+def test_clue_task_404(task_store: TaskStore):
+    with pytest.raises(KeyError):
+        task_store.upsert_clue(
+            99999, kind="cursor_session", ref_key="x"
+        )

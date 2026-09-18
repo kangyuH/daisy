@@ -148,3 +148,93 @@ def test_chat_projects_list_delete(client):
     assert deleted.status_code == 200
     missing = client.get("/chat-projects/oc_x")
     assert missing.status_code == 404
+
+
+def test_clues_api_crud_and_reverse(client):
+    created = client.post(
+        "/tasks", json={"title": "挂会话", "kind": "readonly"}
+    ).json()["task"]
+    tid = created["id"]
+
+    post = client.post(
+        f"/tasks/{tid}/clues",
+        json={
+            "kind": "cursor_session",
+            "ref_key": "conv-1",
+            "one_liner": "拉取上下文",
+            "relevance": "primary",
+            "actor": "agent",
+        },
+    )
+    assert post.status_code == 200
+    body = post.json()
+    assert body["created"] is True
+    clue_id = body["clue"]["id"]
+    assert body["clue"]["relevance"] == "primary"
+
+    listed = client.get(f"/tasks/{tid}/clues")
+    assert listed.status_code == 200
+    assert len(listed.json()["clues"]) == 1
+
+    one = client.get(f"/tasks/{tid}/clues/{clue_id}")
+    assert one.status_code == 200
+    assert one.json()["clue"]["ref_key"] == "conv-1"
+
+    # wrong task → 404
+    other = client.post(
+        "/tasks", json={"title": "别的", "kind": "readonly"}
+    ).json()["task"]
+    wrong = client.get(f"/tasks/{other['id']}/clues/{clue_id}")
+    assert wrong.status_code == 404
+
+    # demotion blocked
+    weak = client.post(
+        f"/tasks/{tid}/clues",
+        json={
+            "kind": "cursor_session",
+            "ref_key": "conv-1",
+            "relevance": "weak",
+            "one_liner": "research 扒到",
+        },
+    )
+    assert weak.status_code == 200
+    assert weak.json()["clue"]["relevance"] == "primary"
+
+    # add weak sibling + filter
+    client.post(
+        f"/tasks/{tid}/clues",
+        json={
+            "kind": "lark_message",
+            "ref_key": "om_x",
+            "relevance": "weak",
+            "one_liner": "顺带提到",
+        },
+    )
+    filt = client.get(
+        f"/tasks/{tid}/clues", params={"min_relevance": "related"}
+    )
+    assert len(filt.json()["clues"]) == 1
+
+    rev = client.get(
+        "/clues",
+        params={"kind": "cursor_session", "ref_key": "conv-1"},
+    )
+    assert rev.status_code == 200
+    assert len(rev.json()["clues"]) == 1
+    assert rev.json()["clues"][0]["task_id"] == tid
+
+    detail = client.get(f"/tasks/{tid}")
+    assert "clues" in detail.json()["task"]
+    assert len(detail.json()["task"]["clues"]) == 2
+
+    bad = client.post(
+        f"/tasks/{tid}/clues",
+        json={"kind": "email", "ref_key": "x"},
+    )
+    assert bad.status_code == 400
+
+    missing = client.post(
+        "/tasks/99999/clues",
+        json={"kind": "cursor_session", "ref_key": "x"},
+    )
+    assert missing.status_code == 404

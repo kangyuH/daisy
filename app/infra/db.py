@@ -123,6 +123,25 @@ CREATE TABLE IF NOT EXISTS dispatch_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_runs_created
     ON dispatch_runs(created_at);
+
+CREATE TABLE IF NOT EXISTS task_clues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    ref_key TEXT NOT NULL,
+    one_liner TEXT NOT NULL DEFAULT '',
+    relevance TEXT NOT NULL DEFAULT 'related',
+    actor TEXT NOT NULL DEFAULT 'api',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    extra_json TEXT,
+    FOREIGN KEY (task_id) REFERENCES tasks(id),
+    UNIQUE (task_id, kind, ref_key)
+);
+CREATE INDEX IF NOT EXISTS idx_task_clues_task
+    ON task_clues(task_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_task_clues_ref
+    ON task_clues(kind, ref_key);
 """
 
 

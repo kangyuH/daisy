@@ -61,6 +61,16 @@ class FollowupBody(BaseModel):
     payload: Optional[Any] = None
 
 
+class UpsertClueBody(BaseModel):
+    kind: str
+    ref_key: str
+    one_liner: Optional[str] = None
+    relevance: Optional[str] = None
+    demote: bool = False
+    actor: str = "api"
+    extra: Optional[Any] = None
+
+
 class ChatProjectBody(BaseModel):
     project_id: str
     note: str = ""
@@ -178,6 +188,84 @@ async def add_followup(
         "event": result["event"],
         "board_sync": board,
     }
+
+
+@router.post("/tasks/{task_id}/clues")
+async def upsert_clue(
+    task_id: int,
+    body: UpsertClueBody,
+    authorization: Optional[str] = Header(default=None),
+    store: TaskStore = Depends(get_task_store),
+):
+    check_token(authorization)
+    try:
+        result = store.upsert_clue(
+            task_id,
+            kind=body.kind,
+            ref_key=body.ref_key,
+            one_liner=body.one_liner,
+            relevance=body.relevance,
+            demote=body.demote,
+            actor=body.actor,
+            extra=body.extra,
+        )
+    except (TaskValidationError, KeyError) as exc:
+        raise _http_from_store_error(exc) from exc
+    return {
+        "ok": True,
+        "clue": result["clue"],
+        "created": result["created"],
+    }
+
+
+@router.get("/tasks/{task_id}/clues")
+async def list_task_clues(
+    task_id: int,
+    authorization: Optional[str] = Header(default=None),
+    store: TaskStore = Depends(get_task_store),
+    min_relevance: Optional[str] = Query(default=None),
+):
+    check_token(authorization)
+    try:
+        clues = store.list_clues(task_id, min_relevance=min_relevance)
+    except (TaskValidationError, KeyError) as exc:
+        raise _http_from_store_error(exc) from exc
+    return {"ok": True, "clues": clues}
+
+
+@router.get("/tasks/{task_id}/clues/{clue_id}")
+async def get_task_clue(
+    task_id: int,
+    clue_id: int,
+    authorization: Optional[str] = Header(default=None),
+    store: TaskStore = Depends(get_task_store),
+):
+    check_token(authorization)
+    clue = store.get_clue(clue_id, task_id=task_id)
+    if not clue:
+        raise HTTPException(
+            status_code=404,
+            detail=f"clue {clue_id} not found on task {task_id}",
+        )
+    return {"ok": True, "clue": clue}
+
+
+@router.get("/clues")
+async def find_clues(
+    authorization: Optional[str] = Header(default=None),
+    store: TaskStore = Depends(get_task_store),
+    kind: str = Query(...),
+    ref_key: str = Query(...),
+    min_relevance: Optional[str] = Query(default=None),
+):
+    check_token(authorization)
+    try:
+        clues = store.find_clues(
+            kind=kind, ref_key=ref_key, min_relevance=min_relevance
+        )
+    except TaskValidationError as exc:
+        raise _http_from_store_error(exc) from exc
+    return {"ok": True, "clues": clues}
 
 
 @router.put("/chat-projects/{chat_id}")
