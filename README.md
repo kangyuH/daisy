@@ -4,6 +4,8 @@
 
 注意：默认只负责**分发和记账**，不会自动去改数据、跑任务、或在业务群里长篇回复。真要动手，可以你自己做，或再接别的 agent。
 
+长期愿景（飞书闭环、决策分流、允许清单内自动执行）与分阶段路线见 [docs/blueprint.md](docs/blueprint.md)。当前实现仍以下文为准。
+
 ## 能做什么
 
 | 能力 | 说明 |
@@ -301,6 +303,7 @@ pytest -q
 ```text
 app/            # Gateway：api / core / services / infra
 workers/        # Daemon + DispatcherWorker / SimpleWorker
+docs/           # 愿景与路线等设计文档
 run.py          # 启动 Gateway
 run_worker.py   # 启动 worker
 data/           # 运行时 SQLite 与任务工作区（gitignore）
