@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from app.core.deps import check_token, get_dispatch_run_store
+from app.core.deps import (
+    check_token,
+    get_dispatch_run_store,
+    get_queue,
+    get_task_store,
+)
+from app.services.dispatcher.ack import maybe_ack_dispatch_run
 from app.services.dispatcher.store import DispatchRunStore
+from app.services.queue.service import ItemQueue
+from app.services.tasks.store import TaskStore
 
 router = APIRouter(prefix="/dispatcher", tags=["dispatcher"])
 
@@ -23,8 +31,11 @@ class CreateDispatchRunBody(BaseModel):
 @router.post("/runs")
 async def create_dispatch_run(
     body: CreateDispatchRunBody,
+    request: Request,
     authorization: Optional[str] = Header(default=None),
     store: DispatchRunStore = Depends(get_dispatch_run_store),
+    queue: ItemQueue = Depends(get_queue),
+    task_store: TaskStore = Depends(get_task_store),
 ):
     check_token(authorization)
     try:
@@ -38,7 +49,27 @@ async def create_dispatch_run(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "run": run, "deduped": bool(run.get("deduped"))}
+
+    deduped = bool(run.get("deduped"))
+    reply_sync: Optional[dict[str, Any]] = None
+    if not deduped:
+        enabled = bool(getattr(request.app.state, "dispatch_ack_enabled", True))
+        reply_sync = await maybe_ack_dispatch_run(
+            request=request,
+            queue=queue,
+            task_store=task_store,
+            inbound_id=int(run["inbound_id"]),
+            decision=str(run.get("decision") or ""),
+            task_id=run.get("task_id"),
+            enabled=enabled,
+        )
+
+    return {
+        "ok": True,
+        "run": run,
+        "deduped": deduped,
+        "reply_sync": reply_sync,
+    }
 
 
 @router.get("/runs/{inbound_id}")

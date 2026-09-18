@@ -2,7 +2,7 @@
 
 这是一个跑在你自己机器上的**飞书任务入口**：别人在业务群里 `@` 你的机器人（或 `@` 你），本服务会听进去，用大模型判断「这是新事项、还是在跟某条老任务、还是无关」，然后把结论记成任务，并同步到你指定的**台账群**（每条任务一条消息，跟进写在话题里，方便点开看）。
 
-注意：默认只负责**分发和记账**，不会自动去改数据、跑任务、或在业务群里长篇回复。真要动手，可以你自己做，或再接别的 agent。
+注意：默认只负责**分发和记账**，不会自动去改数据、跑任务、或在业务群里长篇回复。create / followup 分发成功后，Gateway 会用业务 bot 回一条短回执（任务标题，不含编号）；noop 不回。真要动手，可以你自己做，或再接别的 agent。
 
 长期愿景（飞书闭环、决策分流、允许清单内自动执行）与分阶段路线见 [docs/blueprint.md](docs/blueprint.md)。当前实现仍以下文为准。
 
@@ -12,11 +12,11 @@
 |------|------|
 | 多业务 Bot 长连接收件 | 每个业务应用各自 `event consume`；只处理已绑定业务群里的 `@bot` / `@登录用户` |
 | 入队与串行消费 | 消息进 SQLite 队列；独立 worker 进程 claim → 处理 → ack/nack |
-| 智能分发（默认） | Dispatcher 拉上下文、看开放任务，决定 create / followup / noop，并留痕 |
+| 智能分发（默认） | Dispatcher 拉上下文、看开放任务，决定 create / followup / noop，并留痕；create/followup 时 Gateway 短回执业务群 |
 | 任务台账 | 创建/跟进后，用 **lark-cli 默认 app 的 bot** 在台账群发根消息并开话题帖 |
 | HTTP API | 注册 bot、绑群、查/建任务、跟进、发消息、拉上下文等 |
 
-典型一天：业务群有人 `@你的业务 bot` → Gateway 入队 → Dispatcher 建一条任务或跟进旧任务 → 台账群出现台账帖（并 `@` 你这个登录用户）。
+典型一天：业务群有人 `@你的业务 bot` → Gateway 入队 → Dispatcher 建一条任务或跟进旧任务 → 业务群短回执 + 台账群出现台账帖（并 `@` 你这个登录用户）。
 
 ## 架构（简图）
 
@@ -281,7 +281,7 @@ curl -sS -H 'Content-Type: application/json' \
 
 | 模式 | 职责 |
 |------|------|
-| **dispatcher**（默认） | 拉上下文 → 建任务 / 跟进 / noop；**不**回业务群、不执行业务 |
+| **dispatcher**（默认） | 拉上下文 → 建任务 / 跟进 / noop；**不**执行业务。create / followup 时 Gateway 自动短回执业务群（只含任务标题，不含编号）；noop 不回 |
 | **simple** | 调试：被 @bot 时回一句「出来干活」；仅 @self 则 skip |
 
 Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_open_tasks`、`get_task`、`create_task`、`followup_task`、`finalize_dispatch`。
@@ -296,7 +296,7 @@ Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_o
 | `POST /tasks` · `GET /tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/followups` | 任务 |
 | `POST /tasks/{id}/clues` · `GET /tasks/{id}/clues` · `GET /tasks/{id}/clues/{clue_id}` · `GET /clues?kind=&ref_key=` | 任务线索索引（读写） |
 | `PUT\|GET\|DELETE /chat-projects/{chat_id}` · `GET /chat-projects` | 群 ↔ 项目 |
-| `POST /dispatcher/runs` · `GET /dispatcher/runs/{inbound_id}` | 分发留痕 |
+| `POST /dispatcher/runs` · `GET /dispatcher/runs/{inbound_id}` | 分发留痕；create/followup 成功时 Gateway 顺带短回执（`reply_sync`） |
 | `POST /im/send` · `/im/reply` · `/im/respond` · `/im/messages/context` | 发消息 / 按 inbound 回复 / 拉上下文 |
 | `POST /queue/{name}/enqueue\|claim\|ack\|nack` · `GET /queue/{name}/stats` | 队列（`inbound` = 消息队列） |
 

@@ -63,6 +63,7 @@ def create_app(*, testing: bool = False) -> FastAPI:
         app.state.task_store = TaskStore(str(path), workspace_root=str(ws_root))
         app.state.dispatch_run_store = DispatchRunStore(str(path))
         app.state.task_board_enabled = not testing
+        app.state.dispatch_ack_enabled = not testing
         app.state.auth_user_open_id = None
 
         if testing:
