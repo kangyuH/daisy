@@ -100,6 +100,31 @@ async def mget_messages(message_ids: list[str]) -> list[dict[str, Any]]:
     return _extract_messages(result)
 
 
+async def resolve_user_sender_open_id(message_id: str) -> Optional[str]:
+    """
+    Resolve the real user open_id for a message via user-identity mget.
+
+    Bot event-consume streams often rewrite sender_id to the consuming bot's
+    self_open_id; do not trust that field for ledger auth.
+    """
+    mid = (message_id or "").strip()
+    if not mid:
+        return None
+    try:
+        msgs = await mget_messages([mid])
+    except Exception:
+        return None
+    if not msgs:
+        return None
+    msg = msgs[0]
+    sender = msg.get("sender") if isinstance(msg.get("sender"), dict) else {}
+    if str(sender.get("sender_type") or "").lower() not in ("", "user"):
+        # still allow if id looks like ou_
+        pass
+    oid = str(sender.get("id") or sender.get("open_id") or "").strip()
+    return oid or None
+
+
 async def list_chat_messages(
     chat_id: str,
     *,

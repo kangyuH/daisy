@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot start: Gateway + worker daemon
+# One-shot start: Gateway + dispatcher worker + agent (auto-research) worker
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,8 +11,10 @@ mkdir -p "$PID_DIR" "$LOG_DIR"
 
 GATEWAY_PID_FILE="$PID_DIR/gateway.pid"
 WORKER_PID_FILE="$PID_DIR/worker.pid"
+AGENT_WORKER_PID_FILE="$PID_DIR/agent_worker.pid"
 GATEWAY_LOG="$LOG_DIR/gateway.log"
 WORKER_LOG="$LOG_DIR/worker.log"
+AGENT_WORKER_LOG="$LOG_DIR/agent_worker.log"
 
 PYTHON="${PYTHON:-}"
 if [[ -z "$PYTHON" ]]; then
@@ -71,12 +73,25 @@ echo "[start] gateway ok"
 if is_running "$WORKER_PID_FILE"; then
   echo "[start] worker already running pid=$(cat "$WORKER_PID_FILE")"
 else
-  echo "[start] starting worker → $WORKER_LOG"
+  echo "[start] starting dispatcher worker → $WORKER_LOG"
   nohup "$PYTHON" "$ROOT/run_worker.py" >>"$WORKER_LOG" 2>&1 &
   echo $! >"$WORKER_PID_FILE"
 fi
 
+if is_running "$AGENT_WORKER_PID_FILE"; then
+  echo "[start] agent worker already running pid=$(cat "$AGENT_WORKER_PID_FILE")"
+else
+  echo "[start] starting agent worker → $AGENT_WORKER_LOG"
+  (
+    export WORKER_IMPL=agent
+    export WORKER_ID="${AGENT_WORKER_ID:-agent-1}"
+    nohup "$PYTHON" "$ROOT/run_worker.py" >>"$AGENT_WORKER_LOG" 2>&1 &
+    echo $! >"$AGENT_WORKER_PID_FILE"
+  )
+fi
+
 echo "[start] done"
-echo "  gateway pid=$(cat "$GATEWAY_PID_FILE")  log=$GATEWAY_LOG"
-echo "  worker  pid=$(cat "$WORKER_PID_FILE")  log=$WORKER_LOG"
+echo "  gateway      pid=$(cat "$GATEWAY_PID_FILE")  log=$GATEWAY_LOG"
+echo "  worker       pid=$(cat "$WORKER_PID_FILE")  log=$WORKER_LOG"
+echo "  agent_worker pid=$(cat "$AGENT_WORKER_PID_FILE")  log=$AGENT_WORKER_LOG"
 echo "  stop:   $ROOT/stop.sh"

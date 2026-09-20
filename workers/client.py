@@ -305,3 +305,36 @@ class GatewayClient:
             body["evidence"] = evidence
         data = self._request("POST", "/dispatcher/runs", json=body)
         return dict(data.get("run") or {})
+
+    def run_agent_phase(
+        self,
+        *,
+        task_id: int,
+        mode: str = "auto_research",
+        phase: str = "",
+        rest: str = "",
+        source: str = "worker",
+        trigger: str = "",
+    ) -> dict:
+        """Blocking call to Gateway /agent/run (Cursor CLI may take a long time)."""
+        import os
+
+        timeout = float(os.environ.get("AGENT_RUN_HTTP_TIMEOUT", "3600") or "3600")
+        old = self.timeout
+        self.timeout = timeout
+        mode_s = (mode or phase or "auto_research").strip()
+        src = (source or trigger or "worker").strip() or "worker"
+        try:
+            data = self._request(
+                "POST",
+                "/agent/run",
+                json={
+                    "task_id": int(task_id),
+                    "mode": mode_s,
+                    "rest": rest,
+                    "source": src,
+                },
+            )
+        finally:
+            self.timeout = old
+        return dict(data.get("result") or data)

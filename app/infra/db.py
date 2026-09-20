@@ -75,7 +75,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     board_chat_id TEXT,
     board_message_id TEXT,
     board_thread_id TEXT,
-    board_sync_error TEXT
+    board_sync_error TEXT,
+    agent_session_id TEXT,
+    agent_phase TEXT,
+    agent_pgid INTEGER,
+    agent_run_id TEXT,
+    agent_run_started_at TEXT,
+    agent_last_command_message_id TEXT,
+    agent_typing_message_id TEXT,
+    agent_typing_reaction_id TEXT,
+    agent_typing_bot_id TEXT,
+    plan_doc_token TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status_updated
     ON tasks(status, updated_at);
@@ -173,11 +183,25 @@ def _migrate_tasks_columns(conn: sqlite3.Connection) -> None:
         ("board_message_id", "TEXT"),
         ("board_thread_id", "TEXT"),
         ("board_sync_error", "TEXT"),
+        ("agent_session_id", "TEXT"),
+        ("agent_phase", "TEXT"),
+        ("agent_pgid", "INTEGER"),
+        ("agent_run_id", "TEXT"),
+        ("agent_run_started_at", "TEXT"),
+        ("agent_last_command_message_id", "TEXT"),
+        ("agent_typing_message_id", "TEXT"),
+        ("agent_typing_reaction_id", "TEXT"),
+        ("agent_typing_bot_id", "TEXT"),
+        ("plan_doc_token", "TEXT"),
     ):
         if col not in cols:
             conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {decl}")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_bot ON tasks(bot_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_board_thread "
+        "ON tasks(board_thread_id)"
     )
 
 

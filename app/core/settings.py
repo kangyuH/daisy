@@ -34,10 +34,15 @@ class Settings:
     calibration_chat_id: str = ""
     lark_user_profile: str = ""
     default_bot_id: str = ""
+    agent_require_plan_before_exec: bool = True
+    ledger_command_bot_id: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv()
+        require_plan = os.environ.get(
+            "AGENT_REQUIRE_PLAN_BEFORE_EXEC", "true"
+        ).strip().lower()
         return cls(
             host=os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0",
             port=int(os.environ.get("PORT", "8000")),
@@ -47,7 +52,20 @@ class Settings:
             calibration_chat_id=os.environ.get("CALIBRATION_CHAT_ID", "").strip(),
             lark_user_profile=os.environ.get("LARK_USER_PROFILE", "").strip(),
             default_bot_id=os.environ.get("DEFAULT_BOT_ID", "").strip(),
+            agent_require_plan_before_exec=require_plan
+            not in ("0", "false", "no", "off"),
+            ledger_command_bot_id=os.environ.get(
+                "LEDGER_COMMAND_BOT_ID", ""
+            ).strip(),
         )
+
+
+def agent_require_plan_before_exec() -> bool:
+    return get_settings().agent_require_plan_before_exec
+
+
+def ledger_command_bot_id() -> str:
+    return get_settings().ledger_command_bot_id
 
 
 def get_settings() -> Settings:

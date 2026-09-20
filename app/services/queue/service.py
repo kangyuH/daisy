@@ -16,6 +16,8 @@ STATUS_FAILED = "failed"
 
 # Message queue name (distinct from future task list).
 QUEUE_INBOUND = "inbound"
+# Auto-research only (ledger commands spawn in-process, not via this queue).
+QUEUE_AGENT = "agent"
 
 
 def _now_iso() -> str:

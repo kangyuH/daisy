@@ -19,7 +19,7 @@ def main() -> None:
     daemon = build_daemon_from_env()
     print(
         f"[run_worker] starting daemon worker_id={daemon.worker_id} "
-        f"base={daemon.client.base_url}",
+        f"queue={daemon.queue} base={daemon.client.base_url}",
         flush=True,
     )
     try:

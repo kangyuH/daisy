@@ -141,15 +141,30 @@ class TaskBoardSync:
                 pass
             return {"ok": False, "error": err}
 
-    async def sync_followup(
-        self, task: dict[str, Any], event: dict[str, Any]
+    async def _reply_to_board(
+        self,
+        task: dict[str, Any],
+        text: str,
+        *,
+        idempotency_key: str,
+        markdown: bool = True,
     ) -> dict[str, Any]:
-        """Ensure board exists, then post followup into thread. Never raises."""
+        """Shared board-thread transport: ensure → reply → update thread_id."""
         if not self.enabled:
             return {"ok": True, "skipped": True, "reason": "disabled"}
 
+        body = (text or "").strip()
+        if not body:
+            return {"ok": False, "error": "empty_text"}
+        if len(body) > 8000:
+            body = body[:7980].rstrip() + "\n\n…(truncated)"
+
+        key = (idempotency_key or "").strip()
+        if not key:
+            return {"ok": False, "error": "idempotency_key_required"}
+        key = key[:50]
+
         ensure = await self.ensure_board(task)
-        # refresh task after ensure
         fresh = self.store.get_task(int(task["id"]), events_limit=1)
         if not fresh:
             return {"ok": False, "error": "task disappeared", "ensure": ensure}
@@ -166,21 +181,23 @@ class TaskBoardSync:
         try:
             reply_res = await reply_message(
                 message_id=str(task["board_message_id"]),
-                text=_followup_text(event),
+                text=body,
                 reply_in_thread=True,
                 as_user=False,
                 profile=None,
-                markdown=True,
-                idempotency_key=f"task-fu-{task['id']}-{event.get('id')}"[:50],
+                markdown=markdown,
+                idempotency_key=key,
             )
             thread_id = extract_thread_id(reply_res) or task.get("board_thread_id")
             updates: dict[str, Any] = {"clear_sync_error": True}
             if thread_id and thread_id != task.get("board_thread_id"):
                 updates["board_thread_id"] = thread_id
             updated = self.store.update_board_fields(int(task["id"]), **updates)
+            mid = extract_message_id(reply_res)
             return {
                 "ok": True,
                 "ensure": ensure,
+                "message_id": mid,
                 "board_message_id": updated.get("board_message_id"),
                 "board_thread_id": updated.get("board_thread_id"),
                 "task": updated,
@@ -194,3 +211,33 @@ class TaskBoardSync:
             except Exception:
                 pass
             return {"ok": False, "error": err, "ensure": ensure}
+
+    async def sync_followup(
+        self, task: dict[str, Any], event: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Ensure board exists, then post followup into thread. Never raises."""
+        eid = event.get("id")
+        key = f"task-fu-{task.get('id')}-{eid}"[:50]
+        return await self._reply_to_board(
+            task, _followup_text(event), idempotency_key=key, markdown=True
+        )
+
+    async def post_board_message(
+        self,
+        task: dict[str, Any],
+        text: str,
+        *,
+        idempotency_key: str,
+        markdown: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Post text into the task ledger thread without creating a task followup.
+
+        Uses CLI default-app bot (same as other board posts).
+        """
+        return await self._reply_to_board(
+            task,
+            text,
+            idempotency_key=idempotency_key,
+            markdown=markdown,
+        )

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop Gateway + worker daemon started by start.sh
+# Stop Gateway + worker daemons started by start.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +40,7 @@ stop_one() {
   rm -f "$pid_file"
 }
 
+stop_one "agent_worker" "$PID_DIR/agent_worker.pid"
 stop_one "worker" "$PID_DIR/worker.pid"
 stop_one "gateway" "$PID_DIR/gateway.pid"
 echo "[stop] done"

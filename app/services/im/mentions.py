@@ -139,6 +139,11 @@ def normalize_inbound_event(bot: "BotConfig", raw: dict[str, Any]) -> dict[str, 
         "message_id": message_id,
         "chat_id": chat_id,
         "thread_id": raw.get("thread_id") or message.get("thread_id"),
+        "root_id": raw.get("root_id")
+        or message.get("root_id")
+        or raw.get("reply_to")
+        or message.get("reply_to")
+        or message.get("parent_id"),
         "content": raw.get("content") or message.get("content"),
         "message_type": raw.get("message_type") or message.get("message_type"),
         "sender": sender,

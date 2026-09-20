@@ -6,11 +6,17 @@ from app.services.dispatcher.ack import TITLE_MAX_LEN, build_ack_text
 
 
 def test_build_ack_create_with_title():
-    assert build_ack_text("create", "查上个月口径") == "收到，已创建任务「查上个月口径」。"
+    assert (
+        build_ack_text("create", "查上个月口径")
+        == "收到，已狸解您的需求并创建任务「查上个月口径」。我们将安排专人为您处狸，请您耐心等待。"
+    )
 
 
 def test_build_ack_followup_with_title():
-    assert build_ack_text("followup", "查上个月口径") == "收到，已跟进任务「查上个月口径」。"
+    assert (
+        build_ack_text("followup", "查上个月口径")
+        == "收到，已狸解您的需求并跟进任务「查上个月口径」。我们将安排专人为您处狸，请您耐心等待。"
+    )
 
 
 def test_build_ack_empty_title_fallback():

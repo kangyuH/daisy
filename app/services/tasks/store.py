@@ -710,6 +710,303 @@ class TaskStore:
             ]
         return _sorted_clues(clues)
 
+    def find_task_by_board_thread(
+        self, board_thread_id: str
+    ) -> Optional[dict[str, Any]]:
+        tid = (board_thread_id or "").strip()
+        if not tid:
+            return None
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE board_thread_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (tid,),
+            )
+            row = cur.fetchone()
+            return _row_task(row) if row else None
+        finally:
+            conn.close()
+
+    def find_task_by_board_message(
+        self, board_message_id: str
+    ) -> Optional[dict[str, Any]]:
+        mid = (board_message_id or "").strip()
+        if not mid:
+            return None
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE board_message_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (mid,),
+            )
+            row = cur.fetchone()
+            return _row_task(row) if row else None
+        finally:
+            conn.close()
+
+    def find_task_for_ledger(
+        self,
+        *,
+        thread_id: Optional[str] = None,
+        root_id: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Resolve task from a calibration-chat thread reply."""
+        for candidate in (
+            (thread_id or "").strip(),
+            (root_id or "").strip(),
+        ):
+            if not candidate:
+                continue
+            hit = self.find_task_by_board_thread(candidate)
+            if hit:
+                return hit
+        root = (root_id or "").strip()
+        if root:
+            hit = self.find_task_by_board_message(root)
+            if hit:
+                return hit
+        return None
+
+    def try_claim_agent_run(
+        self,
+        task_id: int,
+        *,
+        mode: str,
+        run_id: str,
+        claimed_by: str = "agent",
+    ) -> dict[str, Any]:
+        """
+        Atomically claim a task for one agent run.
+
+        Succeeds only when agent_pgid IS NULL and agent_run_id IS NULL.
+        Returns {"ok": True, "task": ...} or {"ok": False, "reason": ..., "task": ...}.
+        """
+        del claimed_by  # reserved for future audit; run_id is the lock token
+        tid = int(task_id)
+        rid = (run_id or "").strip()
+        phase = (mode or "").strip()
+        if not rid:
+            raise TaskValidationError("run_id is required")
+        if not phase:
+            raise TaskValidationError("mode is required")
+        now = _now_iso()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                SET agent_run_id = ?,
+                    agent_run_started_at = ?,
+                    agent_phase = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND agent_pgid IS NULL
+                  AND (agent_run_id IS NULL OR agent_run_id = '')
+                """,
+                (rid, now, phase, now, tid),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                task = self._get_task_conn(conn, tid)
+                if not task:
+                    raise KeyError(f"task {tid} not found")
+                return {
+                    "ok": False,
+                    "reason": "already_running",
+                    "task": task,
+                }
+            conn.commit()
+            task = self._get_task_conn(conn, tid)
+            assert task is not None
+            return {"ok": True, "task": task, "run_id": rid, "mode": phase}
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def attach_agent_pgid(
+        self, task_id: int, *, run_id: str, pgid: int
+    ) -> dict[str, Any]:
+        """Attach real process group to a claimed run (must match run_id)."""
+        tid = int(task_id)
+        rid = (run_id or "").strip()
+        if not rid:
+            raise TaskValidationError("run_id is required")
+        now = _now_iso()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                SET agent_pgid = ?, updated_at = ?
+                WHERE id = ? AND agent_run_id = ?
+                """,
+                (int(pgid), now, tid, rid),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                raise TaskConflictError(
+                    f"task {tid} attach_pgid failed for run_id={rid}"
+                )
+            conn.commit()
+            task = self._get_task_conn(conn, tid)
+            assert task is not None
+            return task
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def release_agent_run(
+        self,
+        task_id: int,
+        *,
+        run_id: Optional[str] = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Clear claim + pgid + phase for a run.
+
+        When force=False, run_id must match (or both NULL → no-op ok).
+        When force=True (e.g. /stop), clear regardless of run_id.
+        """
+        tid = int(task_id)
+        rid = (run_id or "").strip() or None
+        now = _now_iso()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            task = self._get_task_conn(conn, tid)
+            if not task:
+                raise KeyError(f"task {tid} not found")
+            current = str(task.get("agent_run_id") or "").strip() or None
+            if not force:
+                if current is None:
+                    conn.commit()
+                    return task
+                if rid is None or current != rid:
+                    conn.rollback()
+                    raise TaskConflictError(
+                        f"task {tid} release mismatch "
+                        f"(have={current!r} want={rid!r})"
+                    )
+            conn.execute(
+                """
+                UPDATE tasks
+                SET agent_pgid = NULL,
+                    agent_run_id = NULL,
+                    agent_run_started_at = NULL,
+                    agent_phase = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, tid),
+            )
+            conn.commit()
+            updated = self._get_task_conn(conn, tid)
+            assert updated is not None
+            return updated
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def update_agent_runtime(
+        self,
+        task_id: int,
+        *,
+        agent_session_id: Optional[str] = None,
+        agent_phase: Optional[str] = None,
+        agent_pgid: Optional[int] = None,
+        clear_pgid: bool = False,
+        agent_last_command_message_id: Optional[str] = None,
+        plan_doc_token: Optional[str] = None,
+        agent_typing_message_id: Optional[str] = None,
+        agent_typing_reaction_id: Optional[str] = None,
+        agent_typing_bot_id: Optional[str] = None,
+        clear_typing: bool = False,
+        agent_run_id: Optional[str] = None,
+        agent_run_started_at: Optional[str] = None,
+        clear_run: bool = False,
+    ) -> dict[str, Any]:
+        conn = self._connect()
+        try:
+            task = self._get_task_conn(conn, task_id)
+            if not task:
+                raise KeyError(f"task {task_id} not found")
+            sets: list[str] = []
+            args: list[Any] = []
+            if agent_session_id is not None:
+                sets.append("agent_session_id = ?")
+                args.append(agent_session_id.strip() or None)
+            if agent_phase is not None:
+                sets.append("agent_phase = ?")
+                args.append(agent_phase.strip() or None)
+            if clear_pgid:
+                sets.append("agent_pgid = NULL")
+            elif agent_pgid is not None:
+                sets.append("agent_pgid = ?")
+                args.append(int(agent_pgid))
+            if clear_run:
+                sets.append("agent_run_id = NULL")
+                sets.append("agent_run_started_at = NULL")
+            else:
+                if agent_run_id is not None:
+                    sets.append("agent_run_id = ?")
+                    args.append(agent_run_id.strip() or None)
+                if agent_run_started_at is not None:
+                    sets.append("agent_run_started_at = ?")
+                    args.append(agent_run_started_at.strip() or None)
+            if agent_last_command_message_id is not None:
+                sets.append("agent_last_command_message_id = ?")
+                args.append(agent_last_command_message_id.strip() or None)
+            if plan_doc_token is not None:
+                sets.append("plan_doc_token = ?")
+                args.append(plan_doc_token.strip() or None)
+            if clear_typing:
+                sets.append("agent_typing_message_id = NULL")
+                sets.append("agent_typing_reaction_id = NULL")
+                sets.append("agent_typing_bot_id = NULL")
+            else:
+                if agent_typing_message_id is not None:
+                    sets.append("agent_typing_message_id = ?")
+                    args.append(agent_typing_message_id.strip() or None)
+                if agent_typing_reaction_id is not None:
+                    sets.append("agent_typing_reaction_id = ?")
+                    args.append(agent_typing_reaction_id.strip() or None)
+                if agent_typing_bot_id is not None:
+                    sets.append("agent_typing_bot_id = ?")
+                    # Empty string clears — default app stores NULL.
+                    args.append(agent_typing_bot_id.strip() or None)
+            if not sets:
+                return task
+            sets.append("updated_at = ?")
+            args.append(_now_iso())
+            args.append(task_id)
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+                args,
+            )
+            conn.commit()
+            updated = self._get_task_conn(conn, task_id)
+            assert updated is not None
+            return updated
+        finally:
+            conn.close()
+
     def update_board_fields(
         self,
         task_id: int,

@@ -5,8 +5,10 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from app.core.deps import check_token, get_task_store
+from app.core.deps import check_token, get_queue, get_task_store
 from app.core.settings import auth_user_open_id
+from app.services.agent.enqueue import enqueue_auto_research
+from app.services.queue.service import ItemQueue
 from app.services.tasks.board import TaskBoardSync
 from app.services.tasks.models import (
     EVENT_NOTE,
@@ -61,6 +63,13 @@ class FollowupBody(BaseModel):
     payload: Optional[Any] = None
 
 
+class BoardMessageBody(BaseModel):
+    text: str
+    idempotency_key: str
+    markdown: bool = True
+    actor: str = "agent"
+
+
 class UpsertClueBody(BaseModel):
     kind: str
     ref_key: str
@@ -92,6 +101,7 @@ async def create_task(
     request: Request,
     authorization: Optional[str] = Header(default=None),
     store: TaskStore = Depends(get_task_store),
+    queue: ItemQueue = Depends(get_queue),
 ):
     check_token(authorization)
     try:
@@ -111,8 +121,23 @@ async def create_task(
     except (TaskValidationError, TaskConflictError, KeyError) as exc:
         raise _http_from_store_error(exc) from exc
     board = await _board_sync(request, store).ensure_board(task)
+    research_enqueue = None
+    try:
+        research_enqueue = await enqueue_auto_research(
+            queue,
+            task_id=int(task["id"]),
+            source="api_create",
+            inbound_id=body.created_from_inbound_id,
+        )
+    except Exception as exc:
+        research_enqueue = {"ok": False, "error": str(exc)[:500]}
     refreshed = store.get_task(int(task["id"]))
-    return {"ok": True, "task": refreshed or task, "board_sync": board}
+    return {
+        "ok": True,
+        "task": refreshed or task,
+        "board_sync": board,
+        "research_enqueue": research_enqueue,
+    }
 
 
 @router.get("/tasks")
@@ -188,6 +213,44 @@ async def add_followup(
         "event": result["event"],
         "board_sync": board,
     }
+
+
+@router.post("/tasks/{task_id}/board-messages")
+async def post_board_message(
+    task_id: int,
+    body: BoardMessageBody,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    store: TaskStore = Depends(get_task_store),
+):
+    """
+    Post to the ledger thread only — does not create a task followup/event.
+    For agent Q&A visible in 台账 without recording task progress.
+    """
+    check_token(authorization)
+    task = store.get_task(task_id, events_limit=1)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    key = (body.idempotency_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="idempotency_key is required")
+    board = await _board_sync(request, store).post_board_message(
+        task, text, idempotency_key=key, markdown=body.markdown
+    )
+    if not board.get("ok") and not board.get("skipped"):
+        raise HTTPException(
+            status_code=502,
+            detail=board.get("error") or "board message failed",
+        )
+    print(
+        f"[board-message] task={task_id} actor={body.actor} "
+        f"ok={board.get('ok')} mid={board.get('message_id')} key={key}",
+        flush=True,
+    )
+    return {"ok": True, "board": board, "task_id": task_id}
 
 
 @router.post("/tasks/{task_id}/clues")

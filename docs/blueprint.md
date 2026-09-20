@@ -123,13 +123,34 @@ Gateway 继续是账本：任务、事件、线索、队列、台账同步。Age
 
 | 已有 | 还没有 |
 |------|--------|
-| 业务群 @ → 入队 → Dispatcher 记账 | 消费后的飞书短回执 |
-| 任务 + 事件 + 线索 + HTTP API | 创建后的自动初探 |
-| 台账根帖 + thread 单向同步 | 飞书端把跟进写回任务 |
-| 单一登录用户被 @ | 关注方、取消关注 |
+| 业务群 @ → 入队 → Dispatcher 记账 | 台账卡片式交互跟进（口令是丐版） |
+| 任务 + 事件 + 线索 + HTTP API | 关注方、取消关注 |
+| 台账根帖 + thread 单向同步 | 飞书手改 plan 回流磁盘 |
+| create 后串行自动 research（`queue=agent`） | 注入防护、MCP 裁剪、租约巡检 |
+| 台账 `/research` `/plan` `/exec` `/stop` 当场拉起 Cursor CLI | 剧本白名单 + 硬沙箱 |
+| 单一登录用户被 @ | 日度巡检未关闭任务 |
 | Cursor skill + curl 调 REST | 可发现的 MCP 工具面 |
-| 人在 IDE 里当执行器 | headless 执行 worker + 允许清单 + 门禁 |
-| 无定期回顾 | 日度巡检未关闭任务与昨日进展 |
+
+## 丐版 Researcher / Executor（已落地摘要）
+
+自用、群可信：不做容器/独立 UID/网络白名单；`--workspace` 只当工作目录。
+
+- **人闸在台账**：业务群只进 Dispatcher；researcher/executor 永不消费业务群。
+- **Gateway only-session**：每个 task 一个 `agent_session_id`，自动调研与台账口令共用 `--resume`；与 IDE session 平行。
+- **原子 run claim**：`agent_run_id` + `BEGIN IMMEDIATE`；同时只允许一个 Gateway run。
+- **显式四模式 `mode`**（`source` 仅审计）：
+  - **auto_research**：固定写 `research.md` 三层；Gateway 硬同步 followup；台账根帖 Typing。
+  - **research**：口令+正文；生命周期 board-message；不捞 `research.md`。
+  - **plan**：口令+正文；本轮 CreatePlan / 本轮更新的 `plan.md` 硬同步；副本 followup。
+  - **exec**：口令+正文；不捞 md；无 `plan.md` 且门禁开启则拒绝。
+  - 空正文 / 未知口令：拒绝并 board-message 回台账。
+  - `/stop`：杀进程组 + release claim。
+- **单轮日志**：`scratch/runs/{run_id}_{mode}.jsonl`，禁止复用历史 CreatePlan / 旧 md。
+- **Typing**：台账侧默认 CLI app（不带 `--profile`）。
+- **两条拉起路径**：auto 进 `queue=agent`；台账口令当场 spawn。
+- **项目线索**：`chat_projects.project_id` → yaml → `--add-dir`。
+- 推迟：注入防护、MCP 裁剪、租约巡检（过期 claim）、剧本白名单。
+
 
 ## 路线
 
@@ -140,7 +161,7 @@ Gateway 继续是账本：任务、事件、线索、队列、台账同步。Age
 目标：查询和决策不必开 IDE。
 
 - inbound 消费后自动短回执（已建任务 / 已跟进 / 为何 noop；失败不要假装成功）
-- 台账 thread 交互跟进（卡片触发 followup，遵守终态规则）
+- 台账 thread 交互跟进（卡片触发 followup，遵守终态规则）；**丐版已用纯文本口令**
 - 任务关注方；同步消息 @ 全员；飞书取消关注
 
 验收：一周内「只想知道任务怎样了 / 记一句决策」可以全程在飞书完成。
@@ -149,14 +170,14 @@ Gateway 继续是账本：任务、事件、线索、队列、台账同步。Age
 
 目标：询问现状和评估风险有自动初稿，停住的任务会被打出来。
 
-- 任务创建后自动一轮探查（上下文、知识、缺口、选项），写入 followup，再进入 `waiting_human`
+- ~~任务创建后自动一轮探查~~（丐版：Cursor CLI research + followup → `waiting_human`）
 - 探查失败也要留下 note，任务不得默默停在 `noted`
 - 日度巡检：所有未关闭任务 + 前一日进展；无进展、阻塞过久、台账同步失败要标出
 - 业务群仍然只回短句；长文在台账
 
 验收：用户问「评估风险」「卡在哪」，台账里已有一版答案；维护者主要处理巡检标红项。
 
-本阶段**可以还没有执行环**。方向性决策先人工或仍由 IDE 落地，但分流已经发生。
+本阶段**可以还没有硬沙箱执行环**；丐版 `/exec` 在人闸后可改现场，靠信任与提示词约束。
 
 ### 第 2 阶段 — 决策后能接着跑
 

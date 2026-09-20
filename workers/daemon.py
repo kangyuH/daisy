@@ -4,7 +4,7 @@ import os
 import time
 from typing import Optional
 
-from app.services.queue.service import QUEUE_INBOUND
+from app.services.queue.service import QUEUE_AGENT, QUEUE_INBOUND
 from workers.client import GatewayClient, GatewayError
 from workers.dispatcher import DispatcherWorker
 from workers.result import WorkerResult
@@ -108,13 +108,23 @@ def build_daemon_from_env() -> Daemon:
         os.environ.get("WORKER_IMPL", "dispatcher").strip().lower() or "dispatcher"
     )
     client = GatewayClient(base, token=token)
+    queue = QUEUE_INBOUND
     if impl == "simple":
         worker: Worker = SimpleWorker(client)
     elif impl == "dispatcher":
         _require_dispatcher_llm_key()
         worker = DispatcherWorker(client)
+    elif impl == "agent":
+        from workers.agent import AgentWorker
+
+        worker = AgentWorker(client)
+        queue = QUEUE_AGENT
+        if worker_id == "daemon-1":
+            worker_id = "agent-1"
     else:
         raise ValueError(
-            f"unknown WORKER_IMPL={impl!r}; supported: dispatcher, simple"
+            f"unknown WORKER_IMPL={impl!r}; supported: dispatcher, simple, agent"
         )
-    return Daemon(client, worker, worker_id=worker_id, idle_sleep=idle)
+    return Daemon(
+        client, worker, queue=queue, worker_id=worker_id, idle_sleep=idle
+    )

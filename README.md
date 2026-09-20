@@ -2,7 +2,7 @@
 
 这是一个跑在你自己机器上的**飞书任务入口**：别人在业务群里 `@` 你的机器人（或 `@` 你），本服务会听进去，用大模型判断「这是新事项、还是在跟某条老任务、还是无关」，然后把结论记成任务，并同步到你指定的**台账群**（每条任务一条消息，跟进写在话题里，方便点开看）。
 
-注意：默认只负责**分发和记账**，不会自动去改数据、跑任务、或在业务群里长篇回复。create / followup 分发成功后，Gateway 会用业务 bot 回一条短回执（任务标题，不含编号）；noop 不回。真要动手，可以你自己做，或再接别的 agent。
+注意：默认只负责**分发和记账**，不会自动在业务群长篇回复。create / followup 分发成功后，Gateway 会用业务 bot 回一条短回执（任务标题，不含编号）；noop 不回。创建任务后会串行自动 **research**（Cursor CLI）；改代码 / 跑现场须在台账 thread 发 `/plan`、`/exec`（见下）。
 
 长期愿景（飞书闭环、决策分流、允许清单内自动执行）与分阶段路线见 [docs/blueprint.md](docs/blueprint.md)。当前实现仍以下文为准。
 
@@ -14,6 +14,8 @@
 | 入队与串行消费 | 消息进 SQLite 队列；独立 worker 进程 claim → 处理 → ack/nack |
 | 智能分发（默认） | Dispatcher 拉上下文、看开放任务，决定 create / followup / noop，并留痕；create/followup 时 Gateway 短回执业务群 |
 | 任务台账 | 创建/跟进后，用 **lark-cli 默认 app 的 bot** 在台账群发根消息并开话题帖 |
+| 自动 research | create 后入 `queue=agent`，agent worker 串行拉起 Cursor CLI 写 `research.md` + followup |
+| 台账口令 | 登录用户在任务 thread 发 `/research` `/plan` `/exec` `/stop`（当场 spawn，不入队） |
 | HTTP API | 注册 bot、绑群、查/建任务、跟进、发消息、拉上下文等 |
 
 典型一天：业务群有人 `@你的业务 bot` → Gateway 入队 → Dispatcher 建一条任务或跟进旧任务 → 业务群短回执 + 台账群出现台账帖（并 `@` 你这个登录用户）。
@@ -26,14 +28,13 @@
                               ▼
                          Gateway :8000
                          (SQLite / 队列 / HTTP API)
-                              │
-                              ▼
-                         Worker daemon
-                         (默认 Dispatcher + DeepSeek)
+                         ├─ inbound → Dispatcher worker
+                         ├─ agent   → Agent worker（自动 research）
+                         └─ 台账口令 → 当场 spawn Cursor CLI
                               │
                               ▼
 台账群 ◄── 默认 app bot 发台账 ──┘
-（同群兼：注册时 open_id 校准）
+（同群兼：注册时 open_id 校准；thread 内 /research|/plan|/exec|/stop）
 ```
 
 ### 台账群是什么
@@ -293,7 +294,7 @@ Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_o
 | `GET /health` | 探活、bot 长连接状态、队列概览 |
 | `POST /bots/register` · `GET /bots` · `GET /bots/{id}` | 注册 / 列表 / 详情 |
 | `POST /bots/{id}/chats` | 绑定业务群 |
-| `POST /tasks` · `GET /tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/followups` | 任务 |
+| `POST /tasks` · `GET /tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/followups` · `POST /tasks/{id}/board-messages` | 任务（board-messages 只贴台账、不记进展） |
 | `POST /tasks/{id}/clues` · `GET /tasks/{id}/clues` · `GET /tasks/{id}/clues/{clue_id}` · `GET /clues?kind=&ref_key=` | 任务线索索引（读写） |
 | `PUT\|GET\|DELETE /chat-projects/{chat_id}` · `GET /chat-projects` | 群 ↔ 项目 |
 | `POST /dispatcher/runs` · `GET /dispatcher/runs/{inbound_id}` | 分发留痕；create/followup 成功时 Gateway 顺带短回执（`reply_sync`） |

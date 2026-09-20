@@ -56,14 +56,17 @@ def test_dispatch_create_sends_ack(client):
     assert body["ok"] is True
     assert body["deduped"] is False
     assert body["reply_sync"]["ok"] is True
-    assert body["reply_sync"]["text"] == "收到，已创建任务「查上个月口径」。"
+    assert body["reply_sync"]["text"] == (
+        "收到，已狸解您的需求并创建任务「查上个月口径」。"
+        "我们将安排专人为您处狸，请您耐心等待。"
+    )
     assert "#" not in body["reply_sync"]["text"]
     assert str(task_id) not in body["reply_sync"]["text"]
 
     mock_respond.assert_awaited_once()
     kwargs = mock_respond.await_args.kwargs
     assert kwargs["message_id"] == "om_ack_1"
-    assert kwargs["text"] == "收到，已创建任务「查上个月口径」。"
+    assert kwargs["text"] == body["reply_sync"]["text"]
     assert kwargs["profile"] == "gemi"
     assert kwargs["thread_id"] == "omt_ack_1"
     assert kwargs["sender_open_id"] == "ou_sender"
@@ -91,9 +94,13 @@ def test_dispatch_followup_sends_ack(client):
         )
 
     assert r.status_code == 200
-    assert r.json()["reply_sync"]["text"] == "收到，已跟进任务「补数口径」。"
+    expected = (
+        "收到，已狸解您的需求并跟进任务「补数口径」。"
+        "我们将安排专人为您处狸，请您耐心等待。"
+    )
+    assert r.json()["reply_sync"]["text"] == expected
     mock_respond.assert_awaited_once()
-    assert mock_respond.await_args.kwargs["text"] == "收到，已跟进任务「补数口径」。"
+    assert mock_respond.await_args.kwargs["text"] == expected
 
 
 def test_dispatch_noop_does_not_reply(client):

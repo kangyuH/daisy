@@ -20,11 +20,25 @@ def _reaction_id_from_result(result: dict[str, Any]) -> Optional[str]:
     return s or None
 
 
+def _normalize_profile(profile: Optional[str]) -> Optional[str]:
+    """Empty → omit --profile (CLI default app)."""
+    p = (profile or "").strip()
+    return p or None
+
+
+def _bot_identity_args(profile: Optional[str]) -> list[str]:
+    args = ["--as", "bot"]
+    p = _normalize_profile(profile)
+    if p:
+        args.extend(["--profile", p])
+    return args
+
+
 async def add_reaction(
     *,
     message_id: str,
     emoji_type: str,
-    profile: str,
+    profile: Optional[str] = None,
 ) -> str:
     """Add a message reaction as bot; return reaction_id."""
     data = json.dumps({"reaction_type": {"emoji_type": emoji_type}}, ensure_ascii=False)
@@ -33,10 +47,7 @@ async def add_reaction(
             "im",
             "reactions",
             "create",
-            "--as",
-            "bot",
-            "--profile",
-            profile,
+            *_bot_identity_args(profile),
             "--message-id",
             message_id,
             "--data",
@@ -53,7 +64,7 @@ async def delete_reaction(
     *,
     message_id: str,
     reaction_id: str,
-    profile: str,
+    profile: Optional[str] = None,
 ) -> dict[str, Any]:
     """Remove a reaction previously added by this bot."""
     return await run_cli_async(
@@ -61,10 +72,7 @@ async def delete_reaction(
             "im",
             "reactions",
             "delete",
-            "--as",
-            "bot",
-            "--profile",
-            profile,
+            *_bot_identity_args(profile),
             "--message-id",
             message_id,
             "--reaction-id",
@@ -73,7 +81,9 @@ async def delete_reaction(
     )
 
 
-async def add_typing_reaction(*, message_id: str, profile: str) -> str:
+async def add_typing_reaction(
+    *, message_id: str, profile: Optional[str] = None
+) -> str:
     return await add_reaction(
         message_id=message_id,
         emoji_type=TYPING_EMOJI_TYPE,
@@ -86,4 +96,6 @@ __all__ = [
     "add_reaction",
     "delete_reaction",
     "add_typing_reaction",
+    "_bot_identity_args",
+    "_normalize_profile",
 ]

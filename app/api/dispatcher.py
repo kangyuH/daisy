@@ -13,6 +13,7 @@ from app.core.deps import (
 )
 from app.services.dispatcher.ack import maybe_ack_dispatch_run
 from app.services.dispatcher.store import DispatchRunStore
+from app.services.agent.enqueue import enqueue_auto_research
 from app.services.queue.service import ItemQueue
 from app.services.tasks.store import TaskStore
 
@@ -52,6 +53,7 @@ async def create_dispatch_run(
 
     deduped = bool(run.get("deduped"))
     reply_sync: Optional[dict[str, Any]] = None
+    research_enqueue: Optional[dict[str, Any]] = None
     if not deduped:
         enabled = bool(getattr(request.app.state, "dispatch_ack_enabled", True))
         reply_sync = await maybe_ack_dispatch_run(
@@ -63,12 +65,26 @@ async def create_dispatch_run(
             task_id=run.get("task_id"),
             enabled=enabled,
         )
+        if (
+            str(run.get("decision") or "") == "create"
+            and run.get("task_id") is not None
+        ):
+            try:
+                research_enqueue = await enqueue_auto_research(
+                    queue,
+                    task_id=int(run["task_id"]),
+                    source="dispatch_create",
+                    inbound_id=int(run["inbound_id"]),
+                )
+            except Exception as exc:
+                research_enqueue = {"ok": False, "error": str(exc)[:500]}
 
     return {
         "ok": True,
         "run": run,
         "deduped": deduped,
         "reply_sync": reply_sync,
+        "research_enqueue": research_enqueue,
     }
 
 

@@ -8,9 +8,17 @@ from typing import Any, Optional, Set
 
 import httpx
 
-from app.core.settings import calibration_chat_id, gateway_base_url
+from app.core.settings import (
+    calibration_chat_id,
+    gateway_base_url,
+    ledger_command_bot_id,
+)
 from app.services.bots.models import BotConfig
-from app.services.im.mentions import extract_mention_open_ids, should_enqueue, normalize_inbound_event
+from app.services.im.mentions import (
+    extract_mention_open_ids,
+    should_enqueue,
+    normalize_inbound_event,
+)
 from app.infra.lark.cli import clear_stale_bus, cli_env, lark_bin, sync_cli_secret
 
 
@@ -182,6 +190,47 @@ class EventConsumer:
                 await asyncio.sleep(0.5 * attempt)
         raise RuntimeError(f"enqueue failed after retries: {last_exc}")
 
+    def _is_ledger_listener(self) -> bool:
+        """Only one consumer should process ledger slash commands."""
+        configured = (ledger_command_bot_id() or "").strip()
+        if configured:
+            return self.bot.id == configured
+        # Default: first bot alphabetically among peers is unknown here;
+        # use env DEFAULT_BOT_ID or accept when unset matches this bot via
+        # Gateway /agent/ledger which also filters. Prefer explicit env.
+        default = os.environ.get("DEFAULT_BOT_ID", "").strip()
+        if default:
+            return self.bot.id == default
+        # No filter configured: every consumer posts; Gateway dedupes by bot_id
+        # against first registered bot. Still only one will act.
+        return True
+
+    async def _http_ledger_command(self, payload: dict[str, Any]) -> None:
+        url = f"{gateway_base_url()}/agent/ledger"
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, 4):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        url, json=payload, headers=self._auth_headers()
+                    )
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"ledger HTTP {resp.status_code}: {resp.text[:500]}"
+                    )
+                _log(
+                    self.bot.id,
+                    f"ledger command posted mid={payload.get('message_id')} "
+                    f"status={resp.status_code} body={resp.text[:200]}",
+                )
+                return
+            except Exception as exc:
+                last_exc = exc
+                self.last_error = str(exc)
+                _log(self.bot.id, f"ledger attempt {attempt} failed: {exc}")
+                await asyncio.sleep(0.5 * attempt)
+        raise RuntimeError(f"ledger command failed after retries: {last_exc}")
+
     def _handle_event_obj(self, obj: dict[str, Any]) -> None:
         event_type = obj.get("type") or obj.get("event_type")
         header = obj.get("header")
@@ -201,14 +250,69 @@ class EventConsumer:
                 return
 
         chat_id = str(obj.get("chat_id") or "")
+        # Flatten nested shapes for chat_id
+        if not chat_id:
+            payload_probe = normalize_inbound_event(self.bot, obj)
+            chat_id = str(payload_probe.get("chat_id") or "")
         mention_ids = extract_mention_open_ids(obj)
 
-        # Calibration chat: feed waiters, never enqueue to business queue
+        # Calibration chat: feed waiters; ledger slash cmds → /agent/ledger
+        # (never inbound or agent queue).
         if chat_id and chat_id == self._calib_chat:
             mentions_raw = obj.get("mentions") or []
             if isinstance(mentions_raw, list) and mentions_raw and self._calib_waiters:
                 self._notify_calib([m for m in mentions_raw if isinstance(m, dict)])
-            _log(self.bot.id, f"calib event mentions={mention_ids} (not enqueued)")
+            if self._is_ledger_listener():
+                flat = normalize_inbound_event(self.bot, obj)
+                # Prefer explicit thread/root from nested message, else top-level
+                # (lark-cli NDJSON often puts root_id/thread_id on the object root).
+                msg = None
+                for candidate in (
+                    obj.get("message") if isinstance(obj.get("message"), dict) else None,
+                    (obj.get("event") or {}).get("message")
+                    if isinstance(obj.get("event"), dict)
+                    else None,
+                ):
+                    if isinstance(candidate, dict):
+                        msg = candidate
+                        break
+                thread_id = flat.get("thread_id") or obj.get("thread_id")
+                root_id = flat.get("root_id") or obj.get("root_id") or obj.get("reply_to")
+                if isinstance(msg, dict):
+                    thread_id = (
+                        thread_id
+                        or msg.get("thread_id")
+                        or msg.get("threadId")
+                    )
+                    root_id = (
+                        root_id
+                        or msg.get("root_id")
+                        or msg.get("rootId")
+                        or msg.get("reply_to")
+                        or msg.get("parent_id")
+                    )
+                # Bot event streams often rewrite sender_id to this bot's
+                # self_open_id; Gateway will re-resolve via user mget when needed.
+                body = {
+                    "bot_id": self.bot.id,
+                    "message_id": str(flat.get("message_id") or ""),
+                    "chat_id": chat_id,
+                    "thread_id": str(thread_id or "") or None,
+                    "root_id": str(root_id or "") or None,
+                    "sender_open_id": flat.get("sender_open_id"),
+                    "bot_open_id": self.bot.open_id,
+                    "self_open_id": self.self_open_id,
+                    "content": flat.get("content"),
+                }
+                if body["message_id"]:
+                    asyncio.create_task(self._safe_ledger(body))
+                else:
+                    _log(self.bot.id, "calib event missing message_id")
+            else:
+                _log(
+                    self.bot.id,
+                    f"calib event mentions={mention_ids} (not ledger listener)",
+                )
             return
 
         if chat_id and chat_id not in self.allowed_chats:
@@ -240,6 +344,13 @@ class EventConsumer:
         except Exception as exc:
             self.last_error = str(exc)
             _log(self.bot.id, f"enqueue error: {exc}")
+
+    async def _safe_ledger(self, payload: dict[str, Any]) -> None:
+        try:
+            await self._http_ledger_command(payload)
+        except Exception as exc:
+            self.last_error = str(exc)
+            _log(self.bot.id, f"ledger error: {exc}")
 
     async def _read_stdout(self) -> None:
         assert self.proc and self.proc.stdout
