@@ -44,7 +44,8 @@ is_running() {
 }
 
 wait_health() {
-  local url="$1/health"
+  # Prefer /live (no SQLite) so startup is not blocked by DB lock contention.
+  local url="$1/live"
   local i
   for i in $(seq 1 60); do
     if curl -fsS "$url" >/dev/null 2>&1; then
@@ -63,9 +64,9 @@ else
   echo $! >"$GATEWAY_PID_FILE"
 fi
 
-echo "[start] waiting for $GATEWAY_BASE_URL/health ..."
+echo "[start] waiting for $GATEWAY_BASE_URL/live ..."
 if ! wait_health "$GATEWAY_BASE_URL"; then
-  echo "[start] gateway health check failed; see $GATEWAY_LOG" >&2
+  echo "[start] gateway live check failed; see $GATEWAY_LOG" >&2
   exit 1
 fi
 echo "[start] gateway ok"

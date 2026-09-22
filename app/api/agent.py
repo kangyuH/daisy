@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -149,7 +150,9 @@ async def ledger_command(
     if not thread_id and not root_id:
         return {"ok": True, "skipped": True, "reason": "missing_thread_id"}
 
-    task = store.find_task_for_ledger(thread_id=thread_id, root_id=root_id)
+    task = await asyncio.to_thread(
+        store.find_task_for_ledger, thread_id=thread_id, root_id=root_id
+    )
     if not task:
         return {
             "ok": True,
@@ -161,8 +164,17 @@ async def ledger_command(
 
     if thread_id and not task.get("board_thread_id"):
         try:
-            store.update_board_fields(int(task["id"]), board_thread_id=thread_id)
-            task = store.get_task(int(task["id"]), events_limit=1) or task
+            await asyncio.to_thread(
+                store.update_board_fields,
+                int(task["id"]),
+                board_thread_id=thread_id,
+            )
+            task = (
+                await asyncio.to_thread(
+                    store.get_task, int(task["id"]), events_limit=1
+                )
+                or task
+            )
         except Exception:
             pass
 
@@ -240,12 +252,13 @@ async def stop_agent(
     store: TaskStore = Depends(get_task_store),
 ):
     check_token(authorization)
-    import asyncio
 
     out = await asyncio.to_thread(kill_task_agent, store, int(body.task_id))
     await clear_task_typing_reaction(store, int(body.task_id))
     board = _board_sync(request, store)
-    fresh = store.get_task(int(body.task_id), events_limit=1)
+    fresh = await asyncio.to_thread(
+        store.get_task, int(body.task_id), events_limit=1
+    )
     if fresh:
         try:
             await board.post_board_message(

@@ -155,7 +155,7 @@ cp .env.example .env
 | `GATEWAY_TOKEN` | 若设置，所有管理 API 需 `Authorization: Bearer …` | 空（不校验） |
 | `WORKER_IMPL` | `dispatcher`（智能分发）或 `simple`（调试回「出来干活」） | `dispatcher` |
 | `WORKER_ID` | claim 时的 worker 标识 | `daemon-1` |
-| `WORKER_IDLE_SLEEP` | 队列空时休眠秒数 | `1` |
+| `WORKER_IDLE_SLEEP` | 队列空时休眠秒数 | `3` |
 | `DISPATCHER_LLM_PROVIDER` | LLM 厂商（目前仅 `deepseek`） | `deepseek` |
 | `DISPATCHER_LLM_MODEL` | 模型名 | `deepseek-v4-pro` |
 | `DISPATCHER_LLM_BASE_URL` | API base | `https://api.deepseek.com` |
@@ -163,8 +163,10 @@ cp .env.example .env
 | `DISPATCHER_AGENT_MAX_ITERATIONS` | 分发 Agent 最大工具轮次 | `6` |
 | `LARK_USER_PROFILE` | user 身份用的 lark-cli profile；空则用 CLI 默认 | 空 |
 | `DEFAULT_BOT_ID` | 没有任何已注册 bot 时，IM API 的 fallback profile | 空 |
-| `GATEWAY_DB_PATH` | SQLite 路径 | `data/gateway.db` |
-| `GATEWAY_TASK_WORKSPACE` | 任务工作区目录 | `data/task_workspace` |
+| `GATEWAY_DB_PATH` | SQLite 路径（**必须本地盘，禁止 NFS**） | `data/gateway.db` |
+| `GATEWAY_TASK_WORKSPACE` | 任务工作区目录（可 NFS） | `data/task_workspace` |
+
+`GATEWAY_DB_PATH` 若落在 NFS（如 `/share/...`），空闲 claim 写锁会让 `/health` 与任务 API 间歇卡死（约 5s）。本机推荐例如 `/data/lark-superbot/gateway.db`；工作区可继续放仓库 `data/task_workspace`。
 
 `.env`、`data/`、`knowledge/` 默认不进 git；每人实例各自一份。
 
@@ -172,7 +174,8 @@ cp .env.example .env
 
 ```bash
 ./start.sh          # Gateway + worker；日志/pid 在 tmp/
-curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:8000/live    # 探活（不碰 SQLite）
+curl -fsS http://127.0.0.1:8000/health  # 诊断（含 db_path / 队列）
 ./stop.sh
 ```
 
@@ -291,7 +294,8 @@ Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_o
 
 | 路径 | 用途 |
 |------|------|
-| `GET /health` | 探活、bot 长连接状态、队列概览 |
+| `GET /live` | 轻量探活（进程 + 内存 bot 状态，不查 SQLite） |
+| `GET /health` | 诊断探活：db_path、bot 长连接、队列概览 |
 | `POST /bots/register` · `GET /bots` · `GET /bots/{id}` | 注册 / 列表 / 详情 |
 | `POST /bots/{id}/chats` | 绑定业务群 |
 | `POST /tasks` · `GET /tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/followups` · `POST /tasks/{id}/board-messages` | 任务（board-messages 只贴台账、不记进展） |

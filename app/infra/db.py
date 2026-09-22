@@ -165,6 +165,8 @@ def init_db_sync(path: Path | None = None) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(p)
     try:
+        # WAL once at init — avoid PRAGMA journal_mode on every connect (slow on NFS).
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_SCHEMA)
         _migrate_tasks_columns(conn)
         conn.commit()
@@ -212,6 +214,5 @@ def connect_sync(path: Path | str | None = None) -> sqlite3.Connection:
         p = Path(path)
     conn = sqlite3.connect(p, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn

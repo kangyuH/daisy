@@ -32,3 +32,13 @@ async def test_queue_nack_requeue(db_file):
     items = await q.claim("inbound", limit=1)
     n = await q.nack(items[0]["id"], requeue=True)
     assert n["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_queue_claim_empty_then_pending(db_file):
+    q = ItemQueue(str(db_file))
+    assert await q.claim("inbound", limit=1, claimed_by="t") == []
+    await q.enqueue("inbound", {"x": 1})
+    items = await q.claim("inbound", limit=1, claimed_by="t")
+    assert len(items) == 1
+    assert items[0]["status"] == "claimed"

@@ -21,7 +21,7 @@ class Daemon:
         *,
         queue: str = QUEUE_INBOUND,
         worker_id: str = "daemon-1",
-        idle_sleep: float = 1.0,
+        idle_sleep: float = 3.0,
     ) -> None:
         self.client = client
         self.worker = worker
@@ -103,7 +103,7 @@ def build_daemon_from_env() -> Daemon:
     base = os.environ.get("GATEWAY_BASE_URL", "http://127.0.0.1:8000").strip()
     token = os.environ.get("GATEWAY_TOKEN", "").strip()
     worker_id = os.environ.get("WORKER_ID", "daemon-1").strip() or "daemon-1"
-    idle = float(os.environ.get("WORKER_IDLE_SLEEP", "1") or "1")
+    idle = float(os.environ.get("WORKER_IDLE_SLEEP", "3") or "3")
     impl = (
         os.environ.get("WORKER_IMPL", "dispatcher").strip().lower() or "dispatcher"
     )

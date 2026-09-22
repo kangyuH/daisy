@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.core.deps import bot_profile, check_token
+from app.core.deps import check_token
 from app.core.settings import calibration_chat_id
 from app.infra.events.manager import BotManager
-from app.infra.lark.cli import LarkCliError
 from app.services.bots.models import load_bots_from_db
 from app.services.bots.register import RegisterError, register_bot
 from app.services.bots.store import BotStore
@@ -66,7 +66,8 @@ async def bots_list(
     store: BotStore = Depends(get_bot_store),
 ):
     check_token(authorization)
-    return {"ok": True, "bots": store.list_bots()}
+    bots = await asyncio.to_thread(store.list_bots)
+    return {"ok": True, "bots": bots}
 
 
 @router.get("/{bot_id}")
@@ -76,7 +77,7 @@ async def bots_get(
     store: BotStore = Depends(get_bot_store),
 ):
     check_token(authorization)
-    bot = store.get_bot(bot_id)
+    bot = await asyncio.to_thread(store.get_bot, bot_id)
     if not bot:
         raise HTTPException(status_code=404, detail=f"bot {bot_id} not found")
     return {"ok": True, "bot": bot}
@@ -100,12 +101,14 @@ async def bots_bind_chat(
             status_code=400,
             detail=f"calibration chat {calib} cannot be used as business binding",
         )
-    if not store.get_bot(bot_id):
+    if not await asyncio.to_thread(store.get_bot, bot_id):
         raise HTTPException(status_code=404, detail=f"bot {bot_id} not found")
     try:
-        binding = store.bind_chat(bot_id, chat_id, force=body.force)
+        binding = await asyncio.to_thread(
+            store.bind_chat, bot_id, chat_id, force=body.force
+        )
     except PermissionError as exc:
-        existing = store.get_chat_binding(chat_id)
+        existing = await asyncio.to_thread(store.get_chat_binding, chat_id)
         raise HTTPException(
             status_code=409,
             detail={
@@ -114,6 +117,6 @@ async def bots_bind_chat(
                 "bound_bot_id": existing["bot_id"] if existing else None,
             },
         ) from exc
-    chats = store.chats_for_bot(bot_id)
+    chats = await asyncio.to_thread(store.chats_for_bot, bot_id)
     manager.update_chats(bot_id, chats)
     return {"ok": True, "binding": binding, "chats": chats}

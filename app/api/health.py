@@ -11,6 +11,23 @@ from app.services.queue.service import ItemQueue
 router = APIRouter(tags=["health"])
 
 
+@router.get("/live")
+async def live(request: Request):
+    """Process liveness for probes — no SQLite access."""
+    manager = getattr(request.app.state, "manager", None)
+    body = {
+        "ok": False,
+        "live": True,
+        "bots": [],
+    }
+    if not manager:
+        body["error"] = "manager not started"
+        return body
+    h = manager.health()
+    body.update(h)
+    return body
+
+
 @router.get("/health")
 async def health(request: Request):
     queue_stats = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -40,7 +41,8 @@ async def create_dispatch_run(
 ):
     check_token(authorization)
     try:
-        run = store.create_run(
+        run = await asyncio.to_thread(
+            store.create_run,
             inbound_id=body.inbound_id,
             decision=body.decision,
             reason=body.reason,
@@ -95,7 +97,7 @@ async def get_dispatch_run(
     store: DispatchRunStore = Depends(get_dispatch_run_store),
 ):
     check_token(authorization)
-    run = store.get_by_inbound(inbound_id)
+    run = await asyncio.to_thread(store.get_by_inbound, inbound_id)
     if not run:
         raise HTTPException(
             status_code=404, detail=f"dispatch_run for inbound {inbound_id} not found"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -105,7 +106,8 @@ async def create_task(
 ):
     check_token(authorization)
     try:
-        task = store.create_task(
+        task = await asyncio.to_thread(
+            store.create_task,
             title=body.title,
             kind=body.kind,
             one_liner=body.one_liner,
@@ -131,7 +133,7 @@ async def create_task(
         )
     except Exception as exc:
         research_enqueue = {"ok": False, "error": str(exc)[:500]}
-    refreshed = store.get_task(int(task["id"]))
+    refreshed = await asyncio.to_thread(store.get_task, int(task["id"]))
     return {
         "ok": True,
         "task": refreshed or task,
@@ -154,7 +156,8 @@ async def list_tasks(
 ):
     check_token(authorization)
     try:
-        tasks = store.list_tasks(
+        tasks = await asyncio.to_thread(
+            store.list_tasks,
             status=status,
             bot_id=bot_id,
             chat_id=chat_id,
@@ -176,7 +179,9 @@ async def get_task(
     events_limit: int = Query(default=50, ge=1, le=500),
 ):
     check_token(authorization)
-    task = store.get_task(task_id, events_limit=events_limit)
+    task = await asyncio.to_thread(
+        store.get_task, task_id, events_limit=events_limit
+    )
     if not task:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     return {"ok": True, "task": task}
@@ -192,7 +197,8 @@ async def add_followup(
 ):
     check_token(authorization)
     try:
-        result = store.add_followup(
+        result = await asyncio.to_thread(
+            store.add_followup,
             task_id,
             message=body.message,
             event_type=body.event_type,
@@ -206,7 +212,7 @@ async def add_followup(
     board = await _board_sync(request, store).sync_followup(
         result["task"], result["event"]
     )
-    refreshed = store.get_task(task_id)
+    refreshed = await asyncio.to_thread(store.get_task, task_id)
     return {
         "ok": True,
         "task": refreshed or result["task"],
@@ -228,7 +234,7 @@ async def post_board_message(
     For agent Q&A visible in 台账 without recording task progress.
     """
     check_token(authorization)
-    task = store.get_task(task_id, events_limit=1)
+    task = await asyncio.to_thread(store.get_task, task_id, events_limit=1)
     if not task:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
     text = (body.text or "").strip()
@@ -262,7 +268,8 @@ async def upsert_clue(
 ):
     check_token(authorization)
     try:
-        result = store.upsert_clue(
+        result = await asyncio.to_thread(
+            store.upsert_clue,
             task_id,
             kind=body.kind,
             ref_key=body.ref_key,
@@ -290,7 +297,9 @@ async def list_task_clues(
 ):
     check_token(authorization)
     try:
-        clues = store.list_clues(task_id, min_relevance=min_relevance)
+        clues = await asyncio.to_thread(
+            store.list_clues, task_id, min_relevance=min_relevance
+        )
     except (TaskValidationError, KeyError) as exc:
         raise _http_from_store_error(exc) from exc
     return {"ok": True, "clues": clues}
@@ -304,7 +313,7 @@ async def get_task_clue(
     store: TaskStore = Depends(get_task_store),
 ):
     check_token(authorization)
-    clue = store.get_clue(clue_id, task_id=task_id)
+    clue = await asyncio.to_thread(store.get_clue, clue_id, task_id=task_id)
     if not clue:
         raise HTTPException(
             status_code=404,
@@ -323,8 +332,11 @@ async def find_clues(
 ):
     check_token(authorization)
     try:
-        clues = store.find_clues(
-            kind=kind, ref_key=ref_key, min_relevance=min_relevance
+        clues = await asyncio.to_thread(
+            store.find_clues,
+            kind=kind,
+            ref_key=ref_key,
+            min_relevance=min_relevance,
         )
     except TaskValidationError as exc:
         raise _http_from_store_error(exc) from exc
@@ -340,8 +352,11 @@ async def upsert_chat_project(
 ):
     check_token(authorization)
     try:
-        item = store.upsert_chat_project(
-            chat_id, body.project_id, note=body.note
+        item = await asyncio.to_thread(
+            store.upsert_chat_project,
+            chat_id,
+            body.project_id,
+            note=body.note,
         )
     except TaskValidationError as exc:
         raise _http_from_store_error(exc) from exc
@@ -355,7 +370,7 @@ async def get_chat_project(
     store: TaskStore = Depends(get_task_store),
 ):
     check_token(authorization)
-    item = store.get_chat_project(chat_id)
+    item = await asyncio.to_thread(store.get_chat_project, chat_id)
     if not item:
         raise HTTPException(
             status_code=404, detail=f"chat_project {chat_id} not found"
@@ -370,7 +385,7 @@ async def delete_chat_project(
     store: TaskStore = Depends(get_task_store),
 ):
     check_token(authorization)
-    ok = store.delete_chat_project(chat_id)
+    ok = await asyncio.to_thread(store.delete_chat_project, chat_id)
     if not ok:
         raise HTTPException(
             status_code=404, detail=f"chat_project {chat_id} not found"
@@ -384,4 +399,5 @@ async def list_chat_projects(
     store: TaskStore = Depends(get_task_store),
 ):
     check_token(authorization)
-    return {"ok": True, "items": store.list_chat_projects()}
+    items = await asyncio.to_thread(store.list_chat_projects)
+    return {"ok": True, "items": items}

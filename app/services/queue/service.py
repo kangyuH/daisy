@@ -121,6 +121,22 @@ class ItemQueue:
         claimed_at = _now_iso()
         conn = self._connect()
         try:
+            # Cheap read first: empty queues must not take a write lock every poll.
+            cur = conn.execute(
+                """
+                SELECT id FROM queue_items
+                WHERE queue = ? AND status = ?
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (queue, STATUS_PENDING, limit),
+            )
+            peek_ids = [int(r["id"]) for r in cur.fetchall()]
+            if not peek_ids:
+                return []
+
+            # End deferred read txn before taking the write lock.
+            conn.commit()
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
                 """
