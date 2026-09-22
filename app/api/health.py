@@ -6,7 +6,9 @@ from fastapi import APIRouter, Request
 
 from app.core.settings import calibration_chat_id
 from app.infra.db import db_path
-from app.services.queue.service import ItemQueue
+from app.services.agent.reconcile import agent_lock_health
+from app.services.queue.service import QUEUE_AGENT, QUEUE_INBOUND, ItemQueue
+from app.services.tasks.store import TaskStore
 
 router = APIRouter(tags=["health"])
 
@@ -31,12 +33,25 @@ async def live(request: Request):
 @router.get("/health")
 async def health(request: Request):
     queue_stats = None
+    queues: dict = {}
     q: Optional[ItemQueue] = getattr(request.app.state, "queue", None)
     if q:
         try:
-            queue_stats = await q.stats("inbound")
+            inbound = await q.stats(QUEUE_INBOUND)
+            agent = await q.stats(QUEUE_AGENT)
+            queues = {"inbound": inbound, "agent": agent}
+            queue_stats = inbound  # back-compat top-level
         except Exception as exc:
             queue_stats = {"error": str(exc)}
+            queues = {"error": str(exc)}
+
+    agent_locks = None
+    task_store: Optional[TaskStore] = getattr(request.app.state, "task_store", None)
+    if task_store is not None:
+        try:
+            agent_locks = agent_lock_health(task_store)
+        except Exception as exc:
+            agent_locks = {"error": str(exc)}
 
     manager = getattr(request.app.state, "manager", None)
     body = {
@@ -46,6 +61,8 @@ async def health(request: Request):
             request.app.state, "calibration_chat_id", calibration_chat_id()
         ),
         "queue": queue_stats,
+        "queues": queues,
+        "agent_locks": agent_locks,
         "bots": [],
     }
     if not manager:

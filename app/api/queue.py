@@ -7,7 +7,11 @@ from pydantic import BaseModel
 
 from app.core.deps import check_token, get_queue
 from app.services.im.reactions import add_typing_reaction, delete_reaction
-from app.services.queue.service import QUEUE_INBOUND, ItemQueue
+from app.services.queue.service import (
+    QUEUE_INBOUND,
+    ClaimOwnershipError,
+    ItemQueue,
+)
 
 router = APIRouter(prefix="/queue", tags=["queue"])
 
@@ -15,6 +19,7 @@ router = APIRouter(prefix="/queue", tags=["queue"])
 class EnqueueBody(BaseModel):
     payload: Any
     idempotency_key: Optional[str] = None
+    force: bool = False
 
 
 class ClaimBody(BaseModel):
@@ -24,13 +29,21 @@ class ClaimBody(BaseModel):
 
 class AckBody(BaseModel):
     id: int
+    claim_token: str
     error: Optional[str] = None
 
 
 class NackBody(BaseModel):
     id: int
+    claim_token: str
     requeue: bool = True
     error: Optional[str] = None
+    busy: bool = False
+
+
+class HeartbeatBody(BaseModel):
+    id: int
+    claim_token: str
 
 
 def _payload_str(payload: dict[str, Any], key: str) -> Optional[str]:
@@ -90,7 +103,12 @@ async def queue_enqueue(
     queue: ItemQueue = Depends(get_queue),
 ):
     check_token(authorization)
-    item = await queue.enqueue(name, body.payload, idempotency_key=body.idempotency_key)
+    item = await queue.enqueue(
+        name,
+        body.payload,
+        idempotency_key=body.idempotency_key,
+        force=bool(body.force),
+    )
     item = await _maybe_add_typing_reaction(queue, name, item)
     return {"ok": True, "item": item}
 
@@ -119,14 +137,18 @@ async def queue_ack(
         before = await queue.get(body.id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if name == QUEUE_INBOUND:
-        await _maybe_remove_typing_reaction(before)
     try:
-        item = await queue.ack(body.id, error=body.error)
+        item = await queue.ack(
+            body.id, claim_token=body.claim_token, error=body.error
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClaimOwnershipError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if name == QUEUE_INBOUND:
+        await _maybe_remove_typing_reaction(before)
     return {"ok": True, "item": item}
 
 
@@ -139,9 +161,37 @@ async def queue_nack(
 ):
     check_token(authorization)
     try:
-        item = await queue.nack(body.id, requeue=body.requeue, error=body.error)
+        item = await queue.nack(
+            body.id,
+            claim_token=body.claim_token,
+            requeue=body.requeue,
+            error=body.error,
+            busy=bool(body.busy),
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClaimOwnershipError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "item": item}
+
+
+@router.post("/{name}/heartbeat")
+async def queue_heartbeat(
+    name: str,
+    body: HeartbeatBody,
+    authorization: Optional[str] = Header(default=None),
+    queue: ItemQueue = Depends(get_queue),
+):
+    del name  # token ownership is global by item id
+    check_token(authorization)
+    try:
+        item = await queue.heartbeat(body.id, claim_token=body.claim_token)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ClaimOwnershipError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True, "item": item}

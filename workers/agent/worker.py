@@ -40,15 +40,10 @@ class AgentWorker:
         if not task:
             return WorkerResult.fail(f"task {task_id} not found")
 
-        if task.get("agent_run_id") or task.get("agent_pgid") is not None:
-            return WorkerResult.skip(
-                f"task {task_id} already running "
-                f"run={task.get('agent_run_id')} pgid={task.get('agent_pgid')}; "
-                "use /stop then retry"
-            )
-
+        # If lock present, still call /agent/run — Gateway clears dead locks
+        # before reclaim. Live locks come back as rejected already_running.
         try:
-            self.client.run_agent_phase(
+            result = self.client.run_agent_phase(
                 task_id=int(task_id),
                 mode=MODE_AUTO_RESEARCH,
                 rest="",
@@ -61,6 +56,29 @@ class AgentWorker:
             return WorkerResult.fail(str(exc))
         except Exception as exc:
             return WorkerResult.retry(str(exc))
+
+        if isinstance(result, dict):
+            if result.get("rejected"):
+                reason = str(result.get("reason") or "rejected")
+                if reason == "already_running":
+                    return WorkerResult.retry(
+                        str(result.get("message") or reason), busy=True
+                    )
+                # terminal / plan_required / spawn_failed: permanent fail
+                return WorkerResult.fail(
+                    str(result.get("message") or reason)
+                )
+            if result.get("ok") is False:
+                return WorkerResult.fail(
+                    str(
+                        result.get("error")
+                        or result.get("message")
+                        or "agent run failed"
+                    )
+                )
+            rc = result.get("returncode")
+            if rc is not None and int(rc) != 0:
+                return WorkerResult.fail(f"agent returncode={rc}")
 
         return WorkerResult.ok()
 

@@ -207,11 +207,17 @@ def test_run_phase_plan_gate(db_file, monkeypatch, tmp_path):
     assert out.get("reason") == "plan_required"
 
 
-def test_agent_worker_skips_when_running():
+def test_agent_worker_busy_retries_when_running():
     from workers.agent.worker import AgentWorker
 
     client = MagicMock()
     client.get_task.return_value = {"id": 1, "agent_pgid": 999, "agent_run_id": "r1"}
+    client.run_agent_phase.return_value = {
+        "ok": False,
+        "rejected": True,
+        "reason": "already_running",
+        "message": "busy",
+    }
     w = AgentWorker(client)
     result = w.handle(
         {
@@ -223,5 +229,42 @@ def test_agent_worker_skips_when_running():
             },
         }
     )
-    assert result.status == "skip"
-    client.run_agent_phase.assert_not_called()
+    assert result.status == "retry"
+    assert result.busy is True
+    client.run_agent_phase.assert_called_once()
+
+
+def test_agent_worker_fails_nonzero_returncode():
+    from workers.agent.worker import AgentWorker
+
+    client = MagicMock()
+    client.get_task.return_value = {"id": 1}
+    client.run_agent_phase.return_value = {
+        "ok": True,
+        "returncode": 2,
+        "spawned": True,
+    }
+    w = AgentWorker(client)
+    result = w.handle(
+        {"id": 11, "payload": {"task_id": 1, "mode": "auto_research"}}
+    )
+    assert result.status == "fail"
+    assert "returncode=2" in (result.error or "")
+
+
+def test_agent_worker_fails_finished_phase_error():
+    from workers.agent.worker import AgentWorker
+
+    client = MagicMock()
+    client.get_task.return_value = {"id": 1}
+    client.run_agent_phase.return_value = {
+        "ok": False,
+        "returncode": -1,
+        "error": "lease lost",
+    }
+    w = AgentWorker(client)
+    result = w.handle(
+        {"id": 12, "payload": {"task_id": 1, "mode": "auto_research"}}
+    )
+    assert result.status == "fail"
+    assert result.error == "lease lost"

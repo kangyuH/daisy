@@ -38,6 +38,29 @@ def test_enqueue_auto_research_idempotent(db_file):
     assert a["payload"]["phase"] == "research"
 
 
+def test_enqueue_auto_research_force_after_failed(db_file):
+    q = ItemQueue(str(db_file))
+    import asyncio
+
+    async def _run():
+        from app.services.agent.enqueue import enqueue_auto_research
+
+        a = await enqueue_auto_research(q, task_id=7, source="api_create")
+        item = (await q.claim(QUEUE_AGENT, limit=1))[0]
+        await q.ack(item["id"], claim_token=item["claim_token"], error="x")
+        blocked = await enqueue_auto_research(q, task_id=7, source="retry")
+        forced = await enqueue_auto_research(
+            q, task_id=7, source="manual", force=True
+        )
+        return blocked, forced
+
+    blocked, forced = asyncio.run(_run())
+    assert blocked["status"] == "failed"
+    assert blocked.get("deduped") is True
+    assert forced["status"] == "pending"
+    assert forced.get("forced") is True
+
+
 def test_format_brief_unbound():
     assert "未绑定" in format_project_brief(None)
 

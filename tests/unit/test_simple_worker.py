@@ -86,6 +86,7 @@ def test_daemon_maps_result_to_ack_nack():
     client.claim.return_value = [
         {
             "id": 9,
+            "claim_token": "tok-a",
             "payload": {
                 "bot_open_id": "ou_bot",
                 "matched_mentions": ["ou_bot"],
@@ -94,13 +95,19 @@ def test_daemon_maps_result_to_ack_nack():
     ]
     worker = MagicMock()
     worker.handle.return_value = WorkerResult.ok()
-    daemon = Daemon(client, worker, idle_sleep=0)
+    daemon = Daemon(client, worker, idle_sleep=0, heartbeat_seconds=3600)
     assert daemon.run_once().status == "ok"
-    client.ack.assert_called_once_with("inbound", 9, error=None)
+    client.heartbeat.assert_called_once_with(
+        "inbound", 9, claim_token="tok-a"
+    )
+    client.ack.assert_called_once_with(
+        "inbound", 9, claim_token="tok-a", error=None
+    )
 
     client.reset_mock()
     worker.handle.return_value = WorkerResult.retry("tmp")
-    client.claim.return_value = [{"id": 10, "payload": {}}]
+    client.claim.return_value = [{"id": 10, "claim_token": "tok-b", "payload": {}}]
     assert daemon.run_once().status == "retry"
     client.nack.assert_called_once()
     assert client.nack.call_args.kwargs["requeue"] is True
+    assert client.nack.call_args.kwargs["claim_token"] == "tok-b"

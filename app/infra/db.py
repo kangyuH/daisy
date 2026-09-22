@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS queue_items (
     created_at TEXT NOT NULL,
     claimed_at TEXT,
     claimed_by TEXT,
+    claim_token TEXT,
+    lease_until TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    not_before TEXT,
     finished_at TEXT,
     error TEXT
 );
@@ -81,6 +85,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     agent_pgid INTEGER,
     agent_run_id TEXT,
     agent_run_started_at TEXT,
+    agent_lease_until TEXT,
+    agent_pid INTEGER,
+    agent_proc_start TEXT,
     agent_last_command_message_id TEXT,
     agent_typing_message_id TEXT,
     agent_typing_reaction_id TEXT,
@@ -129,7 +136,9 @@ CREATE TABLE IF NOT EXISTS dispatch_runs (
     reason TEXT NOT NULL,
     evidence_json TEXT,
     actor TEXT NOT NULL DEFAULT 'dispatcher',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    ack_status TEXT,
+    ack_error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_runs_created
     ON dispatch_runs(created_at);
@@ -168,36 +177,103 @@ def init_db_sync(path: Path | None = None) -> Path:
         # WAL once at init — avoid PRAGMA journal_mode on every connect (slow on NFS).
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(_SCHEMA)
-        _migrate_tasks_columns(conn)
+        _migrate_schema(conn)
         conn.commit()
     finally:
         conn.close()
     return p
 
 
+def _add_columns_if_missing(
+    conn: sqlite3.Connection, table: str, columns: list[tuple[str, str]]
+) -> None:
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    cols = {str(row[1]) for row in cur.fetchall()}
+    for col, decl in columns:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Existing DBs: ADD COLUMN / indexes for fields introduced after first schema."""
+    _migrate_tasks_columns(conn)
+    _add_columns_if_missing(
+        conn,
+        "queue_items",
+        [
+            ("claim_token", "TEXT"),
+            ("lease_until", "TEXT"),
+            ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("not_before", "TEXT"),
+        ],
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_queue_items_lease "
+        "ON queue_items(queue, status, lease_until)"
+    )
+    _add_columns_if_missing(
+        conn,
+        "dispatch_runs",
+        [
+            ("ack_status", "TEXT"),
+            ("ack_error", "TEXT"),
+        ],
+    )
+    _maybe_unique_inbound_index(conn)
+
+
+def _maybe_unique_inbound_index(conn: sqlite3.Connection) -> None:
+    """Unique created_from_inbound_id when history has no duplicates."""
+    cur = conn.execute(
+        """
+        SELECT created_from_inbound_id, COUNT(*) AS n
+        FROM tasks
+        WHERE created_from_inbound_id IS NOT NULL
+        GROUP BY created_from_inbound_id
+        HAVING n > 1
+        LIMIT 1
+        """
+    )
+    if cur.fetchone():
+        print(
+            "[db] skip unique index on tasks.created_from_inbound_id "
+            "(duplicate rows already present)",
+            flush=True,
+        )
+        return
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_created_from_inbound "
+        "ON tasks(created_from_inbound_id) "
+        "WHERE created_from_inbound_id IS NOT NULL"
+    )
+
+
 def _migrate_tasks_columns(conn: sqlite3.Connection) -> None:
     """Existing DBs: ADD COLUMN for fields introduced after first tasks schema."""
-    cur = conn.execute("PRAGMA table_info(tasks)")
-    cols = {str(row[1]) for row in cur.fetchall()}
-    for col, decl in (
-        ("bot_id", "TEXT"),
-        ("board_chat_id", "TEXT"),
-        ("board_message_id", "TEXT"),
-        ("board_thread_id", "TEXT"),
-        ("board_sync_error", "TEXT"),
-        ("agent_session_id", "TEXT"),
-        ("agent_phase", "TEXT"),
-        ("agent_pgid", "INTEGER"),
-        ("agent_run_id", "TEXT"),
-        ("agent_run_started_at", "TEXT"),
-        ("agent_last_command_message_id", "TEXT"),
-        ("agent_typing_message_id", "TEXT"),
-        ("agent_typing_reaction_id", "TEXT"),
-        ("agent_typing_bot_id", "TEXT"),
-        ("plan_doc_token", "TEXT"),
-    ):
-        if col not in cols:
-            conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {decl}")
+    _add_columns_if_missing(
+        conn,
+        "tasks",
+        [
+            ("bot_id", "TEXT"),
+            ("board_chat_id", "TEXT"),
+            ("board_message_id", "TEXT"),
+            ("board_thread_id", "TEXT"),
+            ("board_sync_error", "TEXT"),
+            ("agent_session_id", "TEXT"),
+            ("agent_phase", "TEXT"),
+            ("agent_pgid", "INTEGER"),
+            ("agent_run_id", "TEXT"),
+            ("agent_run_started_at", "TEXT"),
+            ("agent_lease_until", "TEXT"),
+            ("agent_pid", "INTEGER"),
+            ("agent_proc_start", "TEXT"),
+            ("agent_last_command_message_id", "TEXT"),
+            ("agent_typing_message_id", "TEXT"),
+            ("agent_typing_reaction_id", "TEXT"),
+            ("agent_typing_bot_id", "TEXT"),
+            ("plan_doc_token", "TEXT"),
+        ],
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_bot ON tasks(bot_id)"
     )

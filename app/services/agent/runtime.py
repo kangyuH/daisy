@@ -7,13 +7,14 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from app.core.settings import agent_require_plan_before_exec
+from app.core.settings import agent_require_plan_before_exec, queue_heartbeat_seconds
 from app.services.agent.cli_runner import (
     build_agent_argv,
     kill_process_group,
     parse_session_id_from_log,
+    read_proc_start,
     spawn_agent,
-    wait_agent,
+    wait_agent,  # kept for tests / callers that patch it
 )
 from app.services.agent.constants import (
     MODE_AUTO_RESEARCH,
@@ -42,13 +43,50 @@ from app.services.agent.plan_board import (
     format_plan_missing_followup,
     persist_plan_markdown,
 )
+from app.services.agent.reconcile import clear_dead_agent_lock
 from app.services.im.outbound import reply_message
 from app.services.im.reactions import add_typing_reaction, delete_reaction
+from app.services.tasks.models import TaskConflictError, is_terminal
 from app.services.tasks.store import TaskStore
 
 
 def _new_run_id() -> str:
     return secrets.token_hex(8)
+
+
+class _LeaseLostError(RuntimeError):
+    """Agent run lease no longer owned by this process."""
+
+
+def _wait_agent_with_lease(
+    store: TaskStore,
+    task_id: int,
+    run_id: str,
+    proc: Any,
+    pgid: int,
+) -> int:
+    """Poll CLI exit while renewing agent lease; abort if ownership lost."""
+    del pgid  # kept for callers; kill happens on LeaseLost
+    interval = max(5.0, float(queue_heartbeat_seconds()))
+    while True:
+        code = proc.poll()
+        if code is not None:
+            log_f = getattr(proc, "_agent_log_f", None)
+            if log_f is not None:
+                try:
+                    log_f.close()
+                except Exception:
+                    pass
+                try:
+                    delattr(proc, "_agent_log_f")
+                except Exception:
+                    pass
+            return int(code)
+        try:
+            store.renew_agent_lease(int(task_id), run_id=str(run_id))
+        except TaskConflictError as exc:
+            raise _LeaseLostError(str(exc)) from exc
+        time.sleep(interval)
 
 
 def _file_fingerprint(path: Path) -> dict[str, Any]:
@@ -279,6 +317,19 @@ def _begin_phase(
     if not task:
         raise KeyError(f"task {tid} not found")
 
+    if is_terminal(str(task.get("status") or "")):
+        return {
+            "ok": False,
+            "rejected": True,
+            "reason": "terminal",
+            "spawned": False,
+            "mode": mode_n,
+            "message": (
+                f"任务已终态（{task.get('status')}），"
+                "不能再启动 agent；请新建任务或先改回非终态。"
+            ),
+        }
+
     if mode_n == MODE_EXEC and agent_require_plan_before_exec():
         d0 = _task_dir(store, task)
         if not (d0 / "plan.md").is_file():
@@ -295,6 +346,10 @@ def _begin_phase(
             }
 
     claim = store.try_claim_agent_run(tid, mode=mode_n, run_id=rid)
+    if not claim.get("ok"):
+        t = claim.get("task") or task
+        if clear_dead_agent_lock(store, t):
+            claim = store.try_claim_agent_run(tid, mode=mode_n, run_id=rid)
     if not claim.get("ok"):
         t = claim.get("task") or task
         return {
@@ -391,7 +446,33 @@ def _begin_phase(
                 "message": f"[{mode_n}] spawn 失败：{exc}",
             }
 
-        store.attach_agent_pgid(tid, run_id=rid, pgid=pgid)
+        try:
+            store.attach_agent_pgid(
+                tid,
+                run_id=rid,
+                pgid=pgid,
+                pid=int(proc.pid),
+                proc_start=read_proc_start(int(proc.pid)),
+            )
+        except Exception as exc:
+            try:
+                kill_process_group(pgid)
+            except Exception:
+                pass
+            try:
+                store.release_agent_run(tid, run_id=rid)
+            except Exception:
+                pass
+            claimed = False
+            return {
+                "ok": False,
+                "rejected": True,
+                "reason": "attach_failed",
+                "spawned": False,
+                "mode": mode_n,
+                "run_id": rid,
+                "message": f"[{mode_n}] attach_pgid 失败：{exc}",
+            }
 
         return {
             "ok": True,
@@ -444,13 +525,45 @@ def _finish_phase(store: TaskStore, begun: dict[str, Any]) -> dict[str, Any]:
     interactive = bool(begun.get("interactive"))
 
     try:
-        code = wait_agent(proc, timeout=None)
-    except Exception as exc:
-        kill_process_group(pgid)
+        code = _wait_agent_with_lease(store, tid, rid, proc, pgid)
+    except _LeaseLostError as exc:
+        try:
+            kill_process_group(pgid)
+        except Exception:
+            pass
         try:
             store.release_agent_run(tid, run_id=rid)
         except Exception:
-            store.release_agent_run(tid, force=True)
+            pass
+        end = None
+        if not interactive:
+            end = _followup(
+                store,
+                tid,
+                f"[{mode}] 租约丢失，已中止：{exc}",
+                status="waiting_human",
+            )
+        return {
+            "ok": False,
+            "mode": mode,
+            "run_id": rid,
+            "error": str(exc),
+            "returncode": -1,
+            "start_event": start,
+            "clues_event": clues_event,
+            "end_event": end,
+            "board_end_text": f"[{mode}] 租约丢失：{exc}",
+            "interactive": interactive,
+        }
+    except Exception as exc:
+        try:
+            kill_process_group(pgid)
+        except Exception:
+            pass
+        try:
+            store.release_agent_run(tid, run_id=rid)
+        except Exception:
+            pass
         end = None
         if not interactive:
             end = _followup(
@@ -475,7 +588,7 @@ def _finish_phase(store: TaskStore, begun: dict[str, Any]) -> dict[str, Any]:
     try:
         store.release_agent_run(tid, run_id=rid)
     except Exception:
-        store.release_agent_run(tid, force=True)
+        pass
     if new_sid:
         try:
             store.update_agent_runtime(tid, agent_session_id=new_sid)

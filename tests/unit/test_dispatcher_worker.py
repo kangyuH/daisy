@@ -28,7 +28,11 @@ def test_dispatcher_skips_without_mention():
 
 def test_dispatcher_skips_when_already_dispatched():
     client = MagicMock()
-    client.get_dispatch_run.return_value = {"inbound_id": 1, "decision": "noop"}
+    client.get_dispatch_run.return_value = {
+        "inbound_id": 1,
+        "decision": "noop",
+        "ack_status": "sent",
+    }
     worker = DispatcherWorker(client, llm=MagicMock(), process_sleep=0)
     with patch("workers.dispatcher.worker.time.sleep"):
         result = worker.handle(
@@ -81,7 +85,11 @@ def test_dispatcher_forces_finalize_when_agent_skips_it():
 
 def test_dispatcher_accepts_at_self():
     client = MagicMock()
-    client.get_dispatch_run.return_value = {"inbound_id": 1}
+    client.get_dispatch_run.return_value = {
+        "inbound_id": 1,
+        "decision": "noop",
+        "ack_status": "sent",
+    }
     worker = DispatcherWorker(client, llm=MagicMock(), process_sleep=0)
     with patch("workers.dispatcher.worker.time.sleep") as mock_sleep:
         result = worker.handle(
@@ -96,3 +104,40 @@ def test_dispatcher_accepts_at_self():
     assert result.status == "skip"
     assert result.error == "already dispatched"
     mock_sleep.assert_called_once_with(0)
+
+
+def test_dispatcher_repairs_failed_ack_without_running_llm():
+    client = MagicMock()
+    client.get_dispatch_run.return_value = {
+        "inbound_id": 1,
+        "decision": "followup",
+        "reason": "existing",
+        "task_id": 12,
+        "ack_status": "failed",
+        "ack_error": "lark down",
+        "evidence": {"message_id": "om_1"},
+        "actor": "dispatcher",
+    }
+    client.record_dispatch_run_result.return_value = {
+        "run": {"inbound_id": 1, "ack_status": "sent"},
+        "reply_sync": {"ok": True},
+        "research_enqueue": None,
+    }
+    llm = MagicMock()
+    worker = DispatcherWorker(client, llm=llm, process_sleep=0)
+
+    with patch("workers.dispatcher.worker.time.sleep"):
+        result = worker.handle(
+            _item(
+                {
+                    "bot_open_id": "ou_bot",
+                    "matched_mentions": ["ou_bot"],
+                    "message_id": "om_1",
+                }
+            )
+        )
+
+    assert result.status == "skip"
+    assert result.error == "already dispatched; side effects repaired"
+    client.record_dispatch_run_result.assert_called_once()
+    llm.invoke.assert_not_called()

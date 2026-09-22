@@ -36,6 +36,10 @@ class Settings:
     default_bot_id: str = ""
     agent_require_plan_before_exec: bool = True
     ledger_command_bot_id: str = ""
+    queue_lease_seconds: int = 120
+    queue_heartbeat_seconds: int = 30
+    queue_max_attempts: int = 5
+    agent_lease_seconds: int = 120
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -57,7 +61,35 @@ class Settings:
             ledger_command_bot_id=os.environ.get(
                 "LEDGER_COMMAND_BOT_ID", ""
             ).strip(),
+            queue_lease_seconds=int(
+                os.environ.get("QUEUE_LEASE_SECONDS", "120") or "120"
+            ),
+            queue_heartbeat_seconds=int(
+                os.environ.get("QUEUE_HEARTBEAT_SECONDS", "30") or "30"
+            ),
+            queue_max_attempts=int(
+                os.environ.get("QUEUE_MAX_ATTEMPTS", "5") or "5"
+            ),
+            agent_lease_seconds=int(
+                os.environ.get("AGENT_LEASE_SECONDS", "120") or "120"
+            ),
         )
+
+
+def queue_lease_seconds() -> int:
+    return max(30, get_settings().queue_lease_seconds)
+
+
+def queue_heartbeat_seconds() -> float:
+    return float(max(5, get_settings().queue_heartbeat_seconds))
+
+
+def queue_max_attempts() -> int:
+    return max(1, get_settings().queue_max_attempts)
+
+
+def agent_lease_seconds() -> int:
+    return max(30, get_settings().agent_lease_seconds)
 
 
 def agent_require_plan_before_exec() -> bool:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+from app.infra.db import connect_sync
 
 
 def test_create_and_get_task(client, tmp_path):
@@ -28,6 +31,92 @@ def test_create_and_get_task(client, tmp_path):
     assert got["title"] == "查根因"
     assert len(got["events"]) >= 1
     assert got["events"][0]["event_type"] == "created"
+
+
+def test_deduped_task_repairs_missing_auto_research(client, db_file):
+    body = {
+        "title": "补建调研",
+        "kind": "readonly",
+        "created_from_inbound_id": 991,
+    }
+    first = client.post("/tasks", json=body)
+    assert first.status_code == 200
+    task_id = int(first.json()["task"]["id"])
+
+    conn = connect_sync(str(db_file))
+    try:
+        conn.execute(
+            "DELETE FROM queue_items WHERE idempotency_key = ?",
+            (f"agent:research:{task_id}",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    repaired = client.post("/tasks", json=body)
+    assert repaired.status_code == 200
+    payload = repaired.json()
+    assert payload["deduped"] is True
+    assert payload["research_enqueue"]["status"] == "pending"
+    assert payload["research_enqueue"]["deduped"] is False
+
+
+def test_deduped_task_ensures_board_without_reopening_research(client):
+    body = {
+        "title": "补建台账且不重跑",
+        "kind": "readonly",
+        "created_from_inbound_id": 993,
+    }
+    with patch(
+        "app.api.tasks.TaskBoardSync.ensure_board",
+        new_callable=AsyncMock,
+        return_value={"ok": True, "skipped": True, "reason": "test"},
+    ) as mock_board:
+        first = client.post("/tasks", json=body)
+        task_id = int(first.json()["task"]["id"])
+        claim = client.post(
+            "/queue/agent/claim", json={"limit": 1, "claimed_by": "test"}
+        ).json()["items"][0]
+        done = client.post(
+            "/queue/agent/ack",
+            json={"id": claim["id"], "claim_token": claim["claim_token"]},
+        )
+        assert done.status_code == 200
+        repeated = client.post("/tasks", json=body)
+
+    assert mock_board.await_count == 2
+    assert claim["idempotency_key"] == f"agent:research:{task_id}"
+    payload = repeated.json()
+    assert payload["deduped"] is True
+    assert payload["board_sync"]["reason"] == "test"
+    assert payload["research_enqueue"]["status"] == "done"
+    assert payload["research_enqueue"]["deduped"] is True
+
+
+def test_deduped_task_does_not_reopen_done_auto_research(client):
+    body = {
+        "title": "已调研不重跑",
+        "kind": "readonly",
+        "created_from_inbound_id": 992,
+    }
+    first = client.post("/tasks", json=body)
+    task_id = int(first.json()["task"]["id"])
+
+    claim = client.post(
+        "/queue/agent/claim", json={"limit": 1, "claimed_by": "test"}
+    ).json()["items"][0]
+    assert claim["idempotency_key"] == f"agent:research:{task_id}"
+    done = client.post(
+        "/queue/agent/ack",
+        json={"id": claim["id"], "claim_token": claim["claim_token"]},
+    )
+    assert done.status_code == 200
+
+    repeated = client.post("/tasks", json=body)
+    payload = repeated.json()
+    assert payload["deduped"] is True
+    assert payload["research_enqueue"]["status"] == "done"
+    assert payload["research_enqueue"]["deduped"] is True
 
 
 def test_chat_project_bind_inherit(client):

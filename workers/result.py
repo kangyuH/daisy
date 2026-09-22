@@ -8,6 +8,7 @@ from typing import Optional
 class WorkerResult:
     status: str  # ok | skip | retry | fail
     error: Optional[str] = None
+    busy: bool = False
 
     @classmethod
     def ok(cls) -> "WorkerResult":
@@ -18,8 +19,8 @@ class WorkerResult:
         return cls("skip", error=reason or None)
 
     @classmethod
-    def retry(cls, error: str) -> "WorkerResult":
-        return cls("retry", error=error)
+    def retry(cls, error: str, *, busy: bool = False) -> "WorkerResult":
+        return cls("retry", error=error, busy=busy)
 
     @classmethod
     def fail(cls, error: str) -> "WorkerResult":

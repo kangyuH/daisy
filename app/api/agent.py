@@ -19,6 +19,7 @@ from app.services.agent.runtime import (
 )
 from app.services.queue.service import ItemQueue
 from app.services.tasks.board import TaskBoardSync
+from app.services.tasks.models import TaskConflictError
 from app.services.tasks.store import TaskStore
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -233,14 +234,19 @@ async def run_agent_phase(
     mode = normalize_mode(raw_mode)
     source = (body.source or body.trigger or "api").strip() or "api"
     board = _board_sync(request, store)
-    result = await run_phase_async(
-        store,
-        int(body.task_id),
-        mode=mode,
-        rest=body.rest,
-        source=source,
-        board_sync=board,
-    )
+    try:
+        result = await run_phase_async(
+            store,
+            int(body.task_id),
+            mode=mode,
+            rest=body.rest,
+            source=source,
+            board_sync=board,
+        )
+    except TaskConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"ok": True, "result": result}
 
 
@@ -276,6 +282,7 @@ class EnqueueResearchBody(BaseModel):
     source: str = "create"
     inbound_id: Optional[int] = None
     trigger: Optional[str] = None  # deprecated alias for source
+    force: bool = False
 
 
 @router.post("/enqueue-research")
@@ -290,5 +297,6 @@ async def enqueue_research(
         task_id=body.task_id,
         source=(body.source or body.trigger or "create"),
         inbound_id=body.inbound_id,
+        force=bool(body.force),
     )
     return {"ok": True, "item": item}

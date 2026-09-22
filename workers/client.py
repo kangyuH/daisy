@@ -58,8 +58,15 @@ class GatewayClient:
         )
         return list(data.get("items") or [])
 
-    def ack(self, queue: str, item_id: int, *, error: Optional[str] = None) -> dict:
-        body: dict[str, Any] = {"id": item_id}
+    def ack(
+        self,
+        queue: str,
+        item_id: int,
+        *,
+        claim_token: str,
+        error: Optional[str] = None,
+    ) -> dict:
+        body: dict[str, Any] = {"id": item_id, "claim_token": claim_token}
         if error:
             body["error"] = error
         return self._request("POST", f"/queue/{queue}/ack", json=body)
@@ -69,13 +76,33 @@ class GatewayClient:
         queue: str,
         item_id: int,
         *,
+        claim_token: str,
         requeue: bool = True,
         error: Optional[str] = None,
+        busy: bool = False,
     ) -> dict:
-        body: dict[str, Any] = {"id": item_id, "requeue": requeue}
+        body: dict[str, Any] = {
+            "id": item_id,
+            "claim_token": claim_token,
+            "requeue": requeue,
+            "busy": bool(busy),
+        }
         if error:
             body["error"] = error
         return self._request("POST", f"/queue/{queue}/nack", json=body)
+
+    def heartbeat(
+        self,
+        queue: str,
+        item_id: int,
+        *,
+        claim_token: str,
+    ) -> dict:
+        return self._request(
+            "POST",
+            f"/queue/{queue}/heartbeat",
+            json={"id": item_id, "claim_token": claim_token},
+        )
 
     def respond(
         self,
@@ -193,7 +220,10 @@ class GatewayClient:
         if message is not None:
             body["message"] = message
         data = self._request("POST", "/tasks", json=body)
-        return dict(data.get("task") or {})
+        task = dict(data.get("task") or {})
+        if data.get("deduped"):
+            task["deduped"] = True
+        return task
 
     def add_followup(
         self,
@@ -293,6 +323,48 @@ class GatewayClient:
         evidence: Any = None,
         actor: str = "dispatcher",
     ) -> dict:
+        data = self.record_dispatch_run_result(
+            inbound_id=inbound_id,
+            decision=decision,
+            reason=reason,
+            task_id=task_id,
+            evidence=evidence,
+            actor=actor,
+        )
+        reply_sync = data.get("reply_sync")
+        if not isinstance(reply_sync, dict) or not (
+            reply_sync.get("ok") or reply_sync.get("skipped")
+        ):
+            detail = (
+                reply_sync.get("error")
+                if isinstance(reply_sync, dict)
+                else "missing reply_sync result"
+            )
+            raise GatewayError(
+                f"dispatch acknowledgement failed: {detail}",
+                status_code=503,
+                body=data,
+            )
+        research = data.get("research_enqueue")
+        if isinstance(research, dict) and research.get("ok") is False:
+            raise GatewayError(
+                f"auto research enqueue failed: {research.get('error') or 'unknown'}",
+                status_code=503,
+                body=data,
+            )
+        return dict(data.get("run") or {})
+
+    def record_dispatch_run_result(
+        self,
+        *,
+        inbound_id: int,
+        decision: str,
+        reason: str,
+        task_id: Optional[int] = None,
+        evidence: Any = None,
+        actor: str = "dispatcher",
+    ) -> dict:
+        """Return the full response, including ack/enqueue repair results."""
         body: dict[str, Any] = {
             "inbound_id": inbound_id,
             "decision": decision,
@@ -304,7 +376,7 @@ class GatewayClient:
         if evidence is not None:
             body["evidence"] = evidence
         data = self._request("POST", "/dispatcher/runs", json=body)
-        return dict(data.get("run") or {})
+        return dict(data)
 
     def run_agent_phase(
         self,

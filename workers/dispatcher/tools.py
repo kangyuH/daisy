@@ -193,8 +193,15 @@ def build_dispatcher_tools(
         tid = int(task["id"])
         state.created_task_id = tid
         state.mark_seen(tid)
-        state.note_tool("create_task", {"task_id": tid, "title": title_s})
-        return _ok({"task": _trim_task(task)})
+        state.note_tool(
+            "create_task",
+            {
+                "task_id": tid,
+                "title": title_s,
+                "deduped": bool(task.get("deduped")),
+            },
+        )
+        return _ok({"task": _trim_task(task), "deduped": bool(task.get("deduped"))})
 
     def followup_task(task_id: int, message: str) -> str:
         if state.has_written():

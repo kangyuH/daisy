@@ -66,6 +66,17 @@ def create_app(*, testing: bool = False) -> FastAPI:
         app.state.dispatch_ack_enabled = not testing
         app.state.auth_user_open_id = None
 
+        if not testing:
+            try:
+                from app.services.agent.reconcile import reconcile_agent_locks
+
+                summary = reconcile_agent_locks(
+                    app.state.task_store, kill_orphans=False
+                )
+                print(f"[gateway] agent lock reconcile: {summary}", flush=True)
+            except Exception as exc:
+                print(f"[gateway] agent lock reconcile failed: {exc}", flush=True)
+
         if testing:
             from app.core.settings import calibration_chat_id
 

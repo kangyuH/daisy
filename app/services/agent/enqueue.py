@@ -17,6 +17,7 @@ async def enqueue_auto_research(
     source: str = "create",
     trigger: Optional[str] = None,
     inbound_id: Optional[int] = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Enqueue one auto-research job per task (idempotent)."""
     tid = int(task_id)
@@ -34,5 +35,6 @@ async def enqueue_auto_research(
         QUEUE_AGENT,
         payload,
         idempotency_key=research_idempotency_key(tid),
+        force=bool(force),
     )
     return item

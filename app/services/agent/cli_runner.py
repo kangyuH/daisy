@@ -46,6 +46,59 @@ def build_agent_argv(
     return cmd
 
 
+def read_proc_start(pid: int) -> Optional[str]:
+    """Return /proc/<pid>/stat starttime field as string, or None."""
+    try:
+        text = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    # comm may contain spaces/parens; starttime is field 22 after closing ')'.
+    close = text.rfind(")")
+    if close < 0:
+        return None
+    parts = text[close + 1 :].split()
+    if len(parts) < 20:
+        return None
+    return parts[19].strip() or None
+
+
+def process_identity_matches(
+    *,
+    pid: Optional[int],
+    pgid: Optional[int],
+    proc_start: Optional[str],
+) -> str:
+    """
+    Check whether the recorded agent process is still the same.
+
+    Returns: alive | dead | unknown
+    """
+    recorded = (proc_start or "").strip()
+    if pid is None or pgid is None or not recorded:
+        return "unknown"
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return "dead"
+    except PermissionError:
+        return "unknown"
+    except OSError:
+        return "unknown"
+    current = read_proc_start(int(pid))
+    if current is None:
+        return "unknown"
+    if current != recorded:
+        return "dead"
+    try:
+        if os.getpgid(int(pid)) != int(pgid):
+            return "dead"
+    except ProcessLookupError:
+        return "dead"
+    except OSError:
+        return "unknown"
+    return "alive"
+
+
 def spawn_agent(
     argv: list[str],
     *,

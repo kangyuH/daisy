@@ -30,6 +30,49 @@ class CreateDispatchRunBody(BaseModel):
     actor: str = "dispatcher"
 
 
+async def _send_ack_if_needed(
+    *,
+    request: Request,
+    queue: ItemQueue,
+    task_store: TaskStore,
+    store: DispatchRunStore,
+    run: dict[str, Any],
+    force: bool = False,
+) -> Optional[dict[str, Any]]:
+    enabled = bool(getattr(request.app.state, "dispatch_ack_enabled", True))
+    if not enabled:
+        return {"ok": True, "skipped": True, "reason": "disabled"}
+    ack_status = str(run.get("ack_status") or "").strip()
+    if ack_status == "sent" and not force:
+        return {"ok": True, "skipped": True, "reason": "already_sent"}
+    reply_sync = await maybe_ack_dispatch_run(
+        request=request,
+        queue=queue,
+        task_store=task_store,
+        inbound_id=int(run["inbound_id"]),
+        decision=str(run.get("decision") or ""),
+        task_id=run.get("task_id"),
+        enabled=enabled,
+    )
+    if reply_sync.get("skipped"):
+        return reply_sync
+    if reply_sync.get("ok"):
+        await asyncio.to_thread(
+            store.update_ack,
+            int(run["inbound_id"]),
+            ack_status="sent",
+            ack_error=None,
+        )
+    else:
+        await asyncio.to_thread(
+            store.update_ack,
+            int(run["inbound_id"]),
+            ack_status="failed",
+            ack_error=str(reply_sync.get("error") or "ack failed"),
+        )
+    return reply_sync
+
+
 @router.post("/runs")
 async def create_dispatch_run(
     body: CreateDispatchRunBody,
@@ -56,30 +99,28 @@ async def create_dispatch_run(
     deduped = bool(run.get("deduped"))
     reply_sync: Optional[dict[str, Any]] = None
     research_enqueue: Optional[dict[str, Any]] = None
-    if not deduped:
-        enabled = bool(getattr(request.app.state, "dispatch_ack_enabled", True))
-        reply_sync = await maybe_ack_dispatch_run(
-            request=request,
-            queue=queue,
-            task_store=task_store,
-            inbound_id=int(run["inbound_id"]),
-            decision=str(run.get("decision") or ""),
-            task_id=run.get("task_id"),
-            enabled=enabled,
-        )
-        if (
-            str(run.get("decision") or "") == "create"
-            and run.get("task_id") is not None
-        ):
-            try:
-                research_enqueue = await enqueue_auto_research(
-                    queue,
-                    task_id=int(run["task_id"]),
-                    source="dispatch_create",
-                    inbound_id=int(run["inbound_id"]),
-                )
-            except Exception as exc:
-                research_enqueue = {"ok": False, "error": str(exc)[:500]}
+    # Fresh run: always try ack. Deduped run: retry ack when not yet sent.
+    reply_sync = await _send_ack_if_needed(
+        request=request,
+        queue=queue,
+        task_store=task_store,
+        store=store,
+        run=run,
+        force=False,
+    )
+    if (
+        str(run.get("decision") or "") == "create"
+        and run.get("task_id") is not None
+    ):
+        try:
+            research_enqueue = await enqueue_auto_research(
+                queue,
+                task_id=int(run["task_id"]),
+                source="dispatch_create",
+                inbound_id=int(run["inbound_id"]),
+            )
+        except Exception as exc:
+            research_enqueue = {"ok": False, "error": str(exc)[:500]}
 
     return {
         "ok": True,

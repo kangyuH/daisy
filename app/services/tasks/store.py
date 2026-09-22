@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.infra.db import connect_sync
+from app.core.settings import agent_lease_seconds
 from app.services.tasks.models import (
     DEFAULT_CLUE_RELEVANCE,
     EVENT_CREATED,
@@ -25,8 +26,18 @@ from app.services.tasks.workspace import TaskWorkspace
 TZ_CN = timezone(timedelta(hours=8))
 
 
+def _now() -> datetime:
+    return datetime.now(TZ_CN)
+
+
 def _now_iso() -> str:
-    return datetime.now(TZ_CN).isoformat(timespec="seconds")
+    return _now().isoformat(timespec="seconds")
+
+
+def _agent_lease_until_iso() -> str:
+    return (_now() + timedelta(seconds=agent_lease_seconds())).isoformat(
+        timespec="seconds"
+    )
 
 
 def _row_task(row: Any) -> dict[str, Any]:
@@ -235,31 +246,77 @@ class TaskStore:
 
         conn = self._connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            if created_from_inbound_id is not None:
+                cur = conn.execute(
+                    """
+                    SELECT * FROM tasks
+                    WHERE created_from_inbound_id = ?
+                    ORDER BY id ASC
+                    LIMIT 1
+                    """,
+                    (int(created_from_inbound_id),),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    task = dict(existing)
+                    task["deduped"] = True
+                    task["events"] = self._list_events_conn(
+                        conn, int(task["id"]), limit=5
+                    )
+                    conn.commit()
+                    return task
+
             # placeholder workspace_path until id known
-            cur = conn.execute(
-                """
-                INSERT INTO tasks (
-                    title, one_liner, kind, status, bot_id, chat_id, thread_id,
-                    project_id, workspace_path, created_from_inbound_id,
-                    created_at, updated_at, closed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    title_s,
-                    one_liner or "",
-                    kind_s,
-                    status_s,
-                    bot_s,
-                    chat_s,
-                    thread_s,
-                    project_s,
-                    "",  # filled after id
-                    created_from_inbound_id,
-                    now,
-                    now,
-                    closed_at,
-                ),
-            )
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO tasks (
+                        title, one_liner, kind, status, bot_id, chat_id, thread_id,
+                        project_id, workspace_path, created_from_inbound_id,
+                        created_at, updated_at, closed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        title_s,
+                        one_liner or "",
+                        kind_s,
+                        status_s,
+                        bot_s,
+                        chat_s,
+                        thread_s,
+                        project_s,
+                        "",  # filled after id
+                        created_from_inbound_id,
+                        now,
+                        now,
+                        closed_at,
+                    ),
+                )
+            except Exception as exc:
+                if (
+                    created_from_inbound_id is not None
+                    and "UNIQUE" in str(exc).upper()
+                ):
+                    cur = conn.execute(
+                        """
+                        SELECT * FROM tasks
+                        WHERE created_from_inbound_id = ?
+                        ORDER BY id ASC
+                        LIMIT 1
+                        """,
+                        (int(created_from_inbound_id),),
+                    )
+                    existing = cur.fetchone()
+                    if existing:
+                        task = dict(existing)
+                        task["deduped"] = True
+                        task["events"] = self._list_events_conn(
+                            conn, int(task["id"]), limit=5
+                        )
+                        conn.commit()
+                        return task
+                raise
             task_id = int(cur.lastrowid)
             ws_path = self.workspace.relative_path(task_id)
             conn.execute(
@@ -288,6 +345,9 @@ class TaskStore:
             conn.commit()
             task = self._get_task_conn(conn, task_id)
             event = self._latest_event_conn(conn, task_id)
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -318,6 +378,7 @@ class TaskStore:
             created_event=created_event,
         )
         task["events"] = [event] if event else []
+        task["deduped"] = False
         return task
 
     def get_task(
@@ -798,6 +859,7 @@ class TaskStore:
         if not phase:
             raise TaskValidationError("mode is required")
         now = _now_iso()
+        lease_until = _agent_lease_until_iso()
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -807,12 +869,15 @@ class TaskStore:
                 SET agent_run_id = ?,
                     agent_run_started_at = ?,
                     agent_phase = ?,
+                    agent_lease_until = ?,
+                    agent_pid = NULL,
+                    agent_proc_start = NULL,
                     updated_at = ?
                 WHERE id = ?
                   AND agent_pgid IS NULL
                   AND (agent_run_id IS NULL OR agent_run_id = '')
                 """,
-                (rid, now, phase, now, tid),
+                (rid, now, phase, lease_until, now, tid),
             )
             if cur.rowcount != 1:
                 conn.rollback()
@@ -835,7 +900,13 @@ class TaskStore:
             conn.close()
 
     def attach_agent_pgid(
-        self, task_id: int, *, run_id: str, pgid: int
+        self,
+        task_id: int,
+        *,
+        run_id: str,
+        pgid: int,
+        pid: Optional[int] = None,
+        proc_start: Optional[str] = None,
     ) -> dict[str, Any]:
         """Attach real process group to a claimed run (must match run_id)."""
         tid = int(task_id)
@@ -843,16 +914,29 @@ class TaskStore:
         if not rid:
             raise TaskValidationError("run_id is required")
         now = _now_iso()
+        lease_until = _agent_lease_until_iso()
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
                 """
                 UPDATE tasks
-                SET agent_pgid = ?, updated_at = ?
+                SET agent_pgid = ?,
+                    agent_pid = ?,
+                    agent_proc_start = ?,
+                    agent_lease_until = ?,
+                    updated_at = ?
                 WHERE id = ? AND agent_run_id = ?
                 """,
-                (int(pgid), now, tid, rid),
+                (
+                    int(pgid),
+                    int(pid) if pid is not None else None,
+                    (proc_start or "").strip() or None,
+                    lease_until,
+                    now,
+                    tid,
+                    rid,
+                ),
             )
             if cur.rowcount != 1:
                 conn.rollback()
@@ -869,6 +953,57 @@ class TaskStore:
         finally:
             conn.close()
 
+    def renew_agent_lease(
+        self, task_id: int, *, run_id: str
+    ) -> dict[str, Any]:
+        """Extend agent_lease_until for the owning run_id. Raises on mismatch."""
+        tid = int(task_id)
+        rid = (run_id or "").strip()
+        if not rid:
+            raise TaskValidationError("run_id is required")
+        now = _now_iso()
+        lease_until = _agent_lease_until_iso()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                SET agent_lease_until = ?, updated_at = ?
+                WHERE id = ? AND agent_run_id = ?
+                """,
+                (lease_until, now, tid, rid),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                raise TaskConflictError(
+                    f"task {tid} renew lease failed for run_id={rid}"
+                )
+            conn.commit()
+            task = self._get_task_conn(conn, tid)
+            assert task is not None
+            return task
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_agent_locks(self) -> list[dict[str, Any]]:
+        """Tasks that currently hold an agent run claim."""
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE agent_run_id IS NOT NULL AND agent_run_id != ''
+                ORDER BY id ASC
+                """
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
+
     def release_agent_run(
         self,
         task_id: int,
@@ -879,41 +1014,44 @@ class TaskStore:
         """
         Clear claim + pgid + phase for a run.
 
-        When force=False, run_id must match (or both NULL → no-op ok).
+        When force=False, run_id must match the active run.
         When force=True (e.g. /stop), clear regardless of run_id.
         """
         tid = int(task_id)
         rid = (run_id or "").strip() or None
+        if not force and rid is None:
+            raise TaskValidationError("run_id is required")
         now = _now_iso()
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            task = self._get_task_conn(conn, tid)
-            if not task:
-                raise KeyError(f"task {tid} not found")
-            current = str(task.get("agent_run_id") or "").strip() or None
-            if not force:
-                if current is None:
-                    conn.commit()
-                    return task
-                if rid is None or current != rid:
-                    conn.rollback()
-                    raise TaskConflictError(
-                        f"task {tid} release mismatch "
-                        f"(have={current!r} want={rid!r})"
-                    )
-            conn.execute(
+            where = "id = ?" if force else "id = ? AND agent_run_id = ?"
+            params: tuple[Any, ...] = (now, tid) if force else (now, tid, rid)
+            cur = conn.execute(
                 """
                 UPDATE tasks
                 SET agent_pgid = NULL,
                     agent_run_id = NULL,
                     agent_run_started_at = NULL,
                     agent_phase = NULL,
+                    agent_lease_until = NULL,
+                    agent_pid = NULL,
+                    agent_proc_start = NULL,
                     updated_at = ?
-                WHERE id = ?
-                """,
-                (now, tid),
+                WHERE """
+                + where,
+                params,
             )
+            if cur.rowcount != 1:
+                conn.rollback()
+                task = self._get_task_conn(conn, tid)
+                if not task:
+                    raise KeyError(f"task {tid} not found")
+                current = str(task.get("agent_run_id") or "").strip() or None
+                raise TaskConflictError(
+                    f"task {tid} release mismatch "
+                    f"(have={current!r} want={rid!r})"
+                )
             conn.commit()
             updated = self._get_task_conn(conn, tid)
             assert updated is not None
@@ -923,7 +1061,6 @@ class TaskStore:
             raise
         finally:
             conn.close()
-
     def update_agent_runtime(
         self,
         task_id: int,

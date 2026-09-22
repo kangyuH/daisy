@@ -122,6 +122,7 @@ async def create_task(
         )
     except (TaskValidationError, TaskConflictError, KeyError) as exc:
         raise _http_from_store_error(exc) from exc
+    deduped = bool(task.get("deduped"))
     board = await _board_sync(request, store).ensure_board(task)
     research_enqueue = None
     try:
@@ -134,9 +135,14 @@ async def create_task(
     except Exception as exc:
         research_enqueue = {"ok": False, "error": str(exc)[:500]}
     refreshed = await asyncio.to_thread(store.get_task, int(task["id"]))
+    out_task = refreshed or task
+    if deduped:
+        out_task = dict(out_task)
+        out_task["deduped"] = True
     return {
         "ok": True,
-        "task": refreshed or task,
+        "task": out_task,
+        "deduped": deduped,
         "board_sync": board,
         "research_enqueue": research_enqueue,
     }

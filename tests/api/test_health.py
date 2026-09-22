@@ -16,4 +16,8 @@ def test_health(client):
     assert body["ok"] is True
     assert "calibration_chat_id" in body
     assert "queue" in body
+    assert "queues" in body
+    assert "inbound" in body["queues"]
+    assert "agent" in body["queues"]
+    assert "agent_locks" in body
     assert "db_path" in body

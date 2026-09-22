@@ -63,14 +63,19 @@ def test_ack_deletes_typing_reaction(client):
             },
         )
     iid = enq.json()["item"]["id"]
-    client.post("/queue/inbound/claim", json={"limit": 1, "claimed_by": "t"})
+    claimed = client.post(
+        "/queue/inbound/claim", json={"limit": 1, "claimed_by": "t"}
+    )
+    token = claimed.json()["items"][0]["claim_token"]
 
     with patch(
         "app.api.queue.delete_reaction",
         new_callable=AsyncMock,
         return_value={"ok": True},
     ) as mock_del:
-        r = client.post("/queue/inbound/ack", json={"id": iid})
+        r = client.post(
+            "/queue/inbound/ack", json={"id": iid, "claim_token": token}
+        )
     assert r.status_code == 200
     assert r.json()["item"]["status"] == "done"
     mock_del.assert_awaited_once()
@@ -92,11 +97,40 @@ def test_queue_api_flow(client):
     items = r.json()["items"]
     assert len(items) == 1
     iid = items[0]["id"]
+    token = items[0]["claim_token"]
 
-    r = client.post("/queue/inbound/ack", json={"id": iid})
+    r = client.post(
+        "/queue/inbound/ack", json={"id": iid, "claim_token": token}
+    )
     assert r.status_code == 200
     assert r.json()["item"]["status"] == "done"
 
     r = client.get("/queue/inbound/stats")
     assert r.status_code == 200
     assert r.json()["counts"]["done"] >= 1
+
+
+def test_queue_ack_wrong_token_409(client):
+    client.post("/queue/inbound/enqueue", json={"payload": {"t": 1}})
+    items = client.post(
+        "/queue/inbound/claim", json={"limit": 1, "claimed_by": "t"}
+    ).json()["items"]
+    r = client.post(
+        "/queue/inbound/ack",
+        json={"id": items[0]["id"], "claim_token": "wrong"},
+    )
+    assert r.status_code == 409
+
+
+def test_queue_heartbeat(client):
+    client.post("/queue/inbound/enqueue", json={"payload": {"t": 1}})
+    items = client.post(
+        "/queue/inbound/claim", json={"limit": 1, "claimed_by": "t"}
+    ).json()["items"]
+    token = items[0]["claim_token"]
+    r = client.post(
+        "/queue/inbound/heartbeat",
+        json={"id": items[0]["id"], "claim_token": token},
+    )
+    assert r.status_code == 200
+    assert r.json()["item"]["lease_until"]

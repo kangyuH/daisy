@@ -15,6 +15,7 @@ def _begun(tmp_path: Path, *, mode: str, tid: int = 1) -> dict:
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text('{"type":"system","subtype":"init","session_id":"sess_x"}\n')
     proc = MagicMock()
+    proc.poll.return_value = 0
     return {
         "tid": tid,
         "mode": mode,
@@ -142,6 +143,33 @@ def test_finish_plan_prefers_log_over_stale_plan_md(db_file, tmp_path, monkeypat
     assert "NEW PLAN" in out["plan_copy_event"]["event"]["message"]
     assert "OLD PLAN" not in out["plan_copy_event"]["event"]["message"]
     assert "NEW PLAN" in (d / "plan.md").read_text(encoding="utf-8")
+
+
+def test_finish_releases_run_when_kill_fails(db_file, tmp_path, monkeypatch):
+    monkeypatch.setenv("GATEWAY_TASK_WORKSPACE", str(tmp_path / "ws"))
+    from app.services.tasks.store import TaskStore
+
+    store = TaskStore(str(db_file))
+    task = store.create_task(title="kill-fail", kind="readonly")
+    tid = int(task["id"])
+    begun = _begun(Path(task["workspace_path"]), mode=MODE_AUTO_RESEARCH, tid=tid)
+    begun["proc"].poll.side_effect = RuntimeError("wait failed")
+    store.try_claim_agent_run(
+        tid, mode=MODE_AUTO_RESEARCH, run_id=begun["run_id"]
+    )
+    store.attach_agent_pgid(
+        tid, run_id=begun["run_id"], pgid=12345, pid=12345, proc_start="1"
+    )
+    with patch(
+        "app.services.agent.runtime.kill_process_group",
+        side_effect=PermissionError("denied"),
+    ):
+        out = _finish_phase(store, begun)
+
+    assert out["ok"] is False
+    fresh = store.get_task(tid, events_limit=1)
+    assert fresh is not None
+    assert fresh.get("agent_run_id") is None
 
 
 def test_claim_agent_run_mutex(db_file, tmp_path, monkeypatch):

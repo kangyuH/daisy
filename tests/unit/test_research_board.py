@@ -80,7 +80,12 @@ def test_run_phase_research_posts_summary(db_file, monkeypatch, tmp_path):
     tid = int(task["id"])
 
     class FakeProc:
+        pid = 4242
+
         def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
             return 0
 
     def fake_spawn(argv, *, cwd=None, log_path=None):
@@ -94,6 +99,7 @@ def test_run_phase_research_posts_summary(db_file, monkeypatch, tmp_path):
         return FakeProc(), 4242
 
     monkeypatch.setattr(rt, "spawn_agent", fake_spawn)
+    monkeypatch.setattr(rt, "read_proc_start", lambda pid: "1")
     monkeypatch.setattr(rt, "wait_agent", lambda proc, timeout=None: 0)
     monkeypatch.setattr(rt, "parse_session_id_from_log", lambda p: "sess-test-1")
     monkeypatch.setattr(

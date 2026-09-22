@@ -128,3 +128,33 @@ class DispatchRunStore:
             return run
         finally:
             conn.close()
+
+    def update_ack(
+        self,
+        inbound_id: int,
+        *,
+        ack_status: str,
+        ack_error: Optional[str] = None,
+    ) -> dict[str, Any]:
+        status_s = (ack_status or "").strip() or None
+        err = (ack_error or "").strip() or None
+        if err and len(err) > 2000:
+            err = err[:2000]
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """
+                UPDATE dispatch_runs
+                SET ack_status = ?, ack_error = ?
+                WHERE inbound_id = ?
+                """,
+                (status_s, err, int(inbound_id)),
+            )
+            if cur.rowcount != 1:
+                raise KeyError(f"dispatch_run for inbound {inbound_id} not found")
+            conn.commit()
+            run = self.get_by_inbound(int(inbound_id))
+            assert run is not None
+            return run
+        finally:
+            conn.close()

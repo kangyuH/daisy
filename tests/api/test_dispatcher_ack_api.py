@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+from app.infra.db import connect_sync
+
 
 def _enable_ack(client) -> None:
     client.app.state.dispatch_ack_enabled = True
@@ -128,7 +130,7 @@ def test_dispatch_noop_does_not_reply(client):
     mock_respond.assert_not_awaited()
 
 
-def test_dispatch_deduped_does_not_reply(client):
+def test_dispatch_deduped_skips_when_ack_already_sent(client):
     _enable_ack(client)
     inbound_id = _enqueue_inbound(client)
     task_id = _create_task(client)
@@ -163,8 +165,95 @@ def test_dispatch_deduped_does_not_reply(client):
 
     assert r2.status_code == 200
     assert r2.json()["deduped"] is True
-    assert r2.json()["reply_sync"] is None
+    assert r2.json()["reply_sync"]["skipped"] is True
+    assert r2.json()["reply_sync"]["reason"] == "already_sent"
     assert mock_respond.await_count == 1
+
+
+def test_dispatch_deduped_retries_failed_ack(client):
+    _enable_ack(client)
+    inbound_id = _enqueue_inbound(client)
+    task_id = _create_task(client)
+
+    with patch(
+        "app.services.dispatcher.ack.respond_to_message",
+        new_callable=AsyncMock,
+        side_effect=[RuntimeError("lark down"), {"ok": True}],
+    ) as mock_respond:
+        r1 = client.post(
+            "/dispatcher/runs",
+            json={
+                "inbound_id": inbound_id,
+                "decision": "create",
+                "reason": "新建",
+                "task_id": task_id,
+            },
+        )
+        assert r1.status_code == 200
+        assert r1.json()["reply_sync"]["ok"] is False
+
+        r2 = client.post(
+            "/dispatcher/runs",
+            json={
+                "inbound_id": inbound_id,
+                "decision": "create",
+                "reason": "补发",
+                "task_id": task_id,
+            },
+        )
+
+    assert r2.status_code == 200
+    assert r2.json()["deduped"] is True
+    assert r2.json()["reply_sync"]["ok"] is True
+    assert mock_respond.await_count == 2
+
+
+def test_dispatch_dedupe_repairs_missing_auto_research(client, db_file):
+    _enable_ack(client)
+    inbound_id = _enqueue_inbound(client)
+    task_id = _create_task(client)
+
+    with patch(
+        "app.services.dispatcher.ack.respond_to_message",
+        new_callable=AsyncMock,
+        return_value={"ok": True},
+    ):
+        first = client.post(
+            "/dispatcher/runs",
+            json={
+                "inbound_id": inbound_id,
+                "decision": "create",
+                "reason": "新建",
+                "task_id": task_id,
+            },
+        )
+        assert first.status_code == 200
+
+        conn = connect_sync(str(db_file))
+        try:
+            conn.execute(
+                "DELETE FROM queue_items WHERE idempotency_key = ?",
+                (f"agent:research:{task_id}",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        repaired = client.post(
+            "/dispatcher/runs",
+            json={
+                "inbound_id": inbound_id,
+                "decision": "create",
+                "reason": "补偿",
+                "task_id": task_id,
+            },
+        )
+
+    body = repaired.json()
+    assert body["deduped"] is True
+    assert body["reply_sync"]["reason"] == "already_sent"
+    assert body["research_enqueue"]["status"] == "pending"
+    assert body["research_enqueue"]["deduped"] is False
 
 
 def test_dispatch_ack_disabled_in_testing_by_default(client):

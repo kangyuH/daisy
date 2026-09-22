@@ -105,7 +105,48 @@ class DispatcherWorker:
             return WorkerResult.retry(str(exc))
 
         if existing:
-            return WorkerResult.skip("already dispatched")
+            ack_sent = str(existing.get("ack_status") or "") == "sent"
+            decision = str(existing.get("decision") or "")
+            # Replaying the idempotent endpoint repairs a failed ack and, for
+            # create decisions, any missing auto-research queue item.
+            if ack_sent and decision != "create":
+                return WorkerResult.skip("already dispatched")
+            try:
+                repaired = self.client.record_dispatch_run_result(
+                    inbound_id=inbound_id,
+                    decision=decision,
+                    reason=str(existing.get("reason") or "repair"),
+                    task_id=existing.get("task_id"),
+                    evidence=existing.get("evidence"),
+                    actor=str(existing.get("actor") or "dispatcher"),
+                )
+            except GatewayError as exc:
+                code = exc.status_code or 0
+                if code >= 500 or code == 0:
+                    return WorkerResult.retry(str(exc))
+                return WorkerResult.fail(str(exc))
+            except Exception as exc:
+                return WorkerResult.retry(str(exc))
+
+            reply_sync = repaired.get("reply_sync")
+            if not isinstance(reply_sync, dict) or not (
+                reply_sync.get("ok") or reply_sync.get("skipped")
+            ):
+                error = (
+                    reply_sync.get("error")
+                    if isinstance(reply_sync, dict)
+                    else "missing reply_sync result"
+                )
+                return WorkerResult.retry(
+                    f"dispatch acknowledgement repair failed: {error}"
+                )
+            research = repaired.get("research_enqueue")
+            if isinstance(research, dict) and research.get("ok") is False:
+                return WorkerResult.retry(
+                    "auto research enqueue repair failed: "
+                    f"{research.get('error') or 'unknown'}"
+                )
+            return WorkerResult.skip("already dispatched; side effects repaired")
 
         state = RunState(
             inbound_id=inbound_id,
@@ -160,6 +201,8 @@ class DispatcherWorker:
             self._ensure_finalize(
                 state, reason="agent_ended_without_finalize"
             )
+        if not state.finalized:
+            return WorkerResult.retry("dispatch finalize side effects incomplete")
 
         return WorkerResult.ok()
 
