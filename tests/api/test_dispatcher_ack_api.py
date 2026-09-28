@@ -33,7 +33,7 @@ def _create_task(client, title: str = "查上个月口径") -> int:
     return int(r.json()["task"]["id"])
 
 
-def test_dispatch_create_sends_ack(client):
+def test_dispatch_create_does_not_send_text_ack(client):
     _enable_ack(client)
     inbound_id = _enqueue_inbound(client)
     task_id = _create_task(client, "查上个月口径")
@@ -57,25 +57,12 @@ def test_dispatch_create_sends_ack(client):
     body = r.json()
     assert body["ok"] is True
     assert body["deduped"] is False
-    assert body["reply_sync"]["ok"] is True
-    assert body["reply_sync"]["text"] == (
-        "收到，已狸解您的需求并创建任务「查上个月口径」。"
-        "我们将安排专人为您处狸，请您耐心等待。"
-    )
-    assert "#" not in body["reply_sync"]["text"]
-    assert str(task_id) not in body["reply_sync"]["text"]
-
-    mock_respond.assert_awaited_once()
-    kwargs = mock_respond.await_args.kwargs
-    assert kwargs["message_id"] == "om_ack_1"
-    assert kwargs["text"] == body["reply_sync"]["text"]
-    assert kwargs["profile"] == "gemi"
-    assert kwargs["thread_id"] == "omt_ack_1"
-    assert kwargs["sender_open_id"] == "ou_sender"
-    assert kwargs["idempotency_key"] == f"ack:{inbound_id}"
+    assert body["reply_sync"]["skipped"] is True
+    assert body["reply_sync"]["reason"] == "disabled"
+    mock_respond.assert_not_awaited()
 
 
-def test_dispatch_followup_sends_ack(client):
+def test_dispatch_followup_does_not_send_text_ack(client):
     _enable_ack(client)
     inbound_id = _enqueue_inbound(client)
     task_id = _create_task(client, "补数口径")
@@ -96,13 +83,9 @@ def test_dispatch_followup_sends_ack(client):
         )
 
     assert r.status_code == 200
-    expected = (
-        "收到，已狸解您的需求并跟进任务「补数口径」。"
-        "我们将安排专人为您处狸，请您耐心等待。"
-    )
-    assert r.json()["reply_sync"]["text"] == expected
-    mock_respond.assert_awaited_once()
-    assert mock_respond.await_args.kwargs["text"] == expected
+    assert r.json()["reply_sync"]["skipped"] is True
+    assert r.json()["reply_sync"]["reason"] == "disabled"
+    mock_respond.assert_not_awaited()
 
 
 def test_dispatch_noop_does_not_reply(client):
@@ -126,7 +109,7 @@ def test_dispatch_noop_does_not_reply(client):
     assert r.status_code == 200
     body = r.json()
     assert body["reply_sync"]["skipped"] is True
-    assert body["reply_sync"]["reason"] == "decision_not_ackable"
+    assert body["reply_sync"]["reason"] == "disabled"
     mock_respond.assert_not_awaited()
 
 
@@ -151,7 +134,7 @@ def test_dispatch_deduped_skips_when_ack_already_sent(client):
         )
         assert r1.status_code == 200
         assert r1.json()["deduped"] is False
-        assert mock_respond.await_count == 1
+        assert r1.json()["reply_sync"]["reason"] == "disabled"
 
         r2 = client.post(
             "/dispatcher/runs",
@@ -166,11 +149,11 @@ def test_dispatch_deduped_skips_when_ack_already_sent(client):
     assert r2.status_code == 200
     assert r2.json()["deduped"] is True
     assert r2.json()["reply_sync"]["skipped"] is True
-    assert r2.json()["reply_sync"]["reason"] == "already_sent"
-    assert mock_respond.await_count == 1
+    assert r2.json()["reply_sync"]["reason"] == "disabled"
+    mock_respond.assert_not_awaited()
 
 
-def test_dispatch_deduped_retries_failed_ack(client):
+def test_dispatch_deduped_does_not_retry_text_ack(client):
     _enable_ack(client)
     inbound_id = _enqueue_inbound(client)
     task_id = _create_task(client)
@@ -190,7 +173,7 @@ def test_dispatch_deduped_retries_failed_ack(client):
             },
         )
         assert r1.status_code == 200
-        assert r1.json()["reply_sync"]["ok"] is False
+        assert r1.json()["reply_sync"]["reason"] == "disabled"
 
         r2 = client.post(
             "/dispatcher/runs",
@@ -204,8 +187,8 @@ def test_dispatch_deduped_retries_failed_ack(client):
 
     assert r2.status_code == 200
     assert r2.json()["deduped"] is True
-    assert r2.json()["reply_sync"]["ok"] is True
-    assert mock_respond.await_count == 2
+    assert r2.json()["reply_sync"]["reason"] == "disabled"
+    mock_respond.assert_not_awaited()
 
 
 def test_dispatch_dedupe_repairs_missing_auto_research(client, db_file):
@@ -251,7 +234,7 @@ def test_dispatch_dedupe_repairs_missing_auto_research(client, db_file):
 
     body = repaired.json()
     assert body["deduped"] is True
-    assert body["reply_sync"]["reason"] == "already_sent"
+    assert body["reply_sync"]["reason"] == "disabled"
     assert body["research_enqueue"]["status"] == "pending"
     assert body["research_enqueue"]["deduped"] is False
 
@@ -280,7 +263,7 @@ def test_dispatch_ack_disabled_in_testing_by_default(client):
     mock_respond.assert_not_awaited()
 
 
-def test_dispatch_ack_feishu_failure_still_200(client):
+def test_dispatch_ack_does_not_call_feishu(client):
     _enable_ack(client)
     inbound_id = _enqueue_inbound(client)
     task_id = _create_task(client)
@@ -289,7 +272,7 @@ def test_dispatch_ack_feishu_failure_still_200(client):
         "app.services.dispatcher.ack.respond_to_message",
         new_callable=AsyncMock,
         side_effect=RuntimeError("lark down"),
-    ):
+    ) as mock_respond:
         r = client.post(
             "/dispatcher/runs",
             json={
@@ -304,5 +287,6 @@ def test_dispatch_ack_feishu_failure_still_200(client):
     body = r.json()
     assert body["ok"] is True
     assert body["run"]["decision"] == "create"
-    assert body["reply_sync"]["ok"] is False
-    assert "lark down" in body["reply_sync"]["error"]
+    assert body["reply_sync"]["skipped"] is True
+    assert body["reply_sync"]["reason"] == "disabled"
+    mock_respond.assert_not_awaited()

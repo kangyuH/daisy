@@ -9,6 +9,9 @@ from app.services.tasks.store import TaskStore
 
 ACK_DECISIONS = frozenset({"create", "followup"})
 TITLE_MAX_LEN = 40
+# Business-chat text ack is offline. Typing emoji on the inbound message
+# is added elsewhere and is not affected by this flag.
+TEXT_ACK_ENABLED = False
 
 
 def _payload_str(payload: dict[str, Any], key: str) -> Optional[str]:
@@ -54,7 +57,7 @@ async def maybe_ack_dispatch_run(
     # Lazy import: app.core.deps imports DispatchRunStore via this package.
     from app.core.deps import bot_profile
 
-    if not enabled:
+    if not TEXT_ACK_ENABLED or not enabled:
         return {"ok": True, "skipped": True, "reason": "disabled"}
 
     decision_s = (decision or "").strip()
@@ -124,6 +127,7 @@ async def maybe_ack_dispatch_run(
 
 __all__ = [
     "ACK_DECISIONS",
+    "TEXT_ACK_ENABLED",
     "TITLE_MAX_LEN",
     "build_ack_text",
     "maybe_ack_dispatch_run",
