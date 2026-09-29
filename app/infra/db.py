@@ -92,7 +92,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     agent_typing_message_id TEXT,
     agent_typing_reaction_id TEXT,
     agent_typing_bot_id TEXT,
-    plan_doc_token TEXT
+    plan_doc_token TEXT,
+    contract_revision INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status_updated
     ON tasks(status, updated_at);
@@ -272,6 +273,7 @@ def _migrate_tasks_columns(conn: sqlite3.Connection) -> None:
             ("agent_typing_reaction_id", "TEXT"),
             ("agent_typing_bot_id", "TEXT"),
             ("plan_doc_token", "TEXT"),
+            ("contract_revision", "INTEGER NOT NULL DEFAULT 0"),
         ],
     )
     conn.execute(

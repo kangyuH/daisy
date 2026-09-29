@@ -177,6 +177,22 @@ async def list_tasks(
     return {"ok": True, "tasks": tasks}
 
 
+@router.post("/tasks/{task_id}/contract")
+async def save_task_contract(
+    task_id: int,
+    body: dict[str, Any],
+    authorization: Optional[str] = Header(default=None),
+    store: TaskStore = Depends(get_task_store),
+):
+    """Replace the semantic contract. Does not write a followup or the ledger."""
+    check_token(authorization)
+    try:
+        task = await asyncio.to_thread(store.save_contract, task_id, body)
+    except (TaskValidationError, TaskConflictError, KeyError) as exc:
+        raise _http_from_store_error(exc) from exc
+    return {"ok": True, "task": task}
+
+
 @router.get("/tasks/{task_id}")
 async def get_task(
     task_id: int,

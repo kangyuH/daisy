@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
+
 from app.infra.db import ROOT
 
 DEFAULT_WORKSPACE_ROOT = ROOT / "data" / "task_workspace"
@@ -131,3 +133,41 @@ class TaskWorkspace:
             json.dumps(clues, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+    def contract_path(self, task_id: int) -> Path:
+        return self.task_dir(task_id) / "contract.yaml"
+
+    def read_contract(self, task_id: int) -> Optional[dict[str, Any]]:
+        path = self.contract_path(task_id)
+        if not path.is_file():
+            return None
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            return None
+        return loaded
+
+    def staged_contract_path(self, task_id: int) -> Path:
+        return self.task_dir(task_id) / "contract.yaml.tmp"
+
+    def write_contract(self, task_id: int, document: dict[str, Any]) -> Path:
+        """Stage contract.yaml.tmp. Promote only after the revision commit succeeds."""
+        d = self.task_dir(task_id)
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = self.staged_contract_path(task_id)
+        text = yaml.safe_dump(
+            document,
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+        tmp.write_text(text, encoding="utf-8")
+        return tmp
+
+    def promote_contract(self, task_id: int) -> Path:
+        """Replace contract.yaml with the staged file. Call after the revision commit."""
+        target = self.contract_path(task_id)
+        self.staged_contract_path(task_id).replace(target)
+        return target
+
+    def discard_staged_contract(self, task_id: int) -> None:
+        self.staged_contract_path(task_id).unlink(missing_ok=True)

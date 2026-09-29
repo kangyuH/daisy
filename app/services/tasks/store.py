@@ -6,6 +6,11 @@ from typing import Any, Optional
 
 from app.infra.db import connect_sync
 from app.core.settings import agent_lease_seconds
+from app.services.tasks.contract import (
+    parse_contract,
+    projection_updates,
+    seed_contract,
+)
 from app.services.tasks.models import (
     DEFAULT_CLUE_RELEVANCE,
     EVENT_CREATED,
@@ -377,9 +382,18 @@ class TaskStore:
             created_at=now,
             created_event=created_event,
         )
-        task["events"] = [event] if event else []
-        task["deduped"] = False
-        return task
+        saved = self.save_contract(
+            task_id,
+            seed_contract(
+                task_id=task_id,
+                title=title_s,
+                one_liner=one_liner or "",
+                thread_id=thread_s,
+                created_from_inbound_id=created_from_inbound_id,
+            ),
+        )
+        saved["deduped"] = False
+        return saved
 
     def get_task(
         self, task_id: int, *, events_limit: int = 50
@@ -393,9 +407,69 @@ class TaskStore:
                 conn, task_id, limit=events_limit
             )
             task["clues"] = self._list_clues_conn(conn, task_id)
-            return task
         finally:
             conn.close()
+        self._attach_contract(task)
+        return task
+
+    def save_contract(self, task_id: int, payload: Any) -> dict[str, Any]:
+        """Stage the new contract, commit the revision, then replace contract.yaml.
+
+        ``revision`` in the payload is rejected; the column is incremented here.
+        A failed update deletes the staged file and leaves the previous YAML.
+        A failed replace after commit raises without rolling the revision back.
+        """
+        conn = self._connect()
+        try:
+            existing = self._get_task_conn(conn, task_id)
+        finally:
+            conn.close()
+        if not existing:
+            raise KeyError(f"task {task_id} not found")
+        contract = parse_contract(payload, task_id=task_id)
+        self.workspace.write_contract(task_id, contract.document())
+        updates = projection_updates(contract)
+        now = _now_iso()
+        sets = ["contract_revision = contract_revision + 1", "updated_at = ?"]
+        args: list[Any] = [now]
+        for column in ("title", "one_liner", "thread_id"):
+            if column in updates:
+                sets.append(f"{column} = ?")
+                args.append(updates[column])
+        args.append(int(task_id))
+        conn = self._connect()
+        try:
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+                args,
+            )
+            conn.commit()
+        except Exception:
+            self.workspace.discard_staged_contract(task_id)
+            raise
+        finally:
+            conn.close()
+        self.workspace.promote_contract(task_id)
+        saved = self.get_task(task_id)
+        assert saved is not None
+        return saved
+
+    def _attach_contract(self, task: dict[str, Any]) -> None:
+        task_id = int(task["id"])
+        revision = int(task.get("contract_revision") or 0)
+        raw = self.workspace.read_contract(task_id)
+        if raw is None and revision == 0:
+            task["contract"] = seed_contract(
+                task_id=task_id,
+                title=str(task.get("title") or ""),
+                one_liner=str(task.get("one_liner") or ""),
+                thread_id=task.get("thread_id"),
+                created_from_inbound_id=task.get("created_from_inbound_id"),
+            )
+            task["contract_persisted"] = False
+            return
+        task["contract"] = raw
+        task["contract_persisted"] = bool(raw is not None and revision >= 1)
 
     def list_tasks(
         self,

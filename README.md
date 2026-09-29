@@ -270,6 +270,16 @@ curl -sS -H 'Content-Type: application/json' \
 终态 `done` / `cancelled` 后仍可追加 note，不可再改 status（HTTP 409）。  
 台账飞书失败不阻断落库，会记 `board_sync_error`，后续 followup 会尝试补建。
 
+### 语义契约（contract）
+
+结果承诺写在任务工作区 `contract.yaml`，字段以 [`docs/daisy-task-contract.template.yaml`](docs/daisy-task-contract.template.yaml) 为准（`schema_version: "0.1"`）。Gateway 在 `POST /tasks` 时写入初稿，并用 `POST /tasks/{id}/contract` 整份替换。请求体里的 `revision` 会被拒绝。
+
+保存次数在 `tasks.contract_revision`：0 表示尚未通过 API 保存，创建成功后为 1，每次替换加 1。YAML 里不写这个数字。
+
+保存时从契约投影 `title`（契约标题）和 `one_liner`（`objective.statement`，陈述为空则不改旧值）。`feedback.destination` 只有在 `status: confirmed` 且 `kind: feishu_thread` 时才覆盖 `thread_id`。`kind`、进度、运行锁、台账和 `chat_id` 不从契约投影。
+
+`GET /tasks/{id}` 附带 `contract`。`contract_revision = 0` 且没有文件时，按旧列合成同一形状，`contract_persisted` 为 false，不落盘。列表只带 `contract_revision`，不嵌整份 YAML。
+
 ### 任务线索（clues）
 
 线索是任务相关材料的索引（Cursor 会话、飞书消息、仓库等），**不是** followup，**不同步台账**。同一任务可挂多条；同一线索也可挂到多个任务。
@@ -285,10 +295,10 @@ curl -sS -H 'Content-Type: application/json' \
 
 | 模式 | 职责 |
 |------|------|
-| **dispatcher**（默认） | 拉上下文 → 建任务 / 跟进 / noop；**不**执行业务。create / followup 时 Gateway 自动短回执业务群（只含任务标题，不含编号）；noop 不回 |
+| **dispatcher**（默认） | 拉上下文，只读契约短稿认任务，决定 create / followup / noop，并留痕；不改契约。create / followup 时 Gateway 自动短回执业务群（只含任务标题，不含编号）；noop 不回 |
 | **simple** | 调试：被 @bot 时回一句「出来干活」；仅 @self 则 skip |
 
-Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_open_tasks`、`get_task`、`create_task`、`followup_task`、`finalize_dispatch`。
+Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_open_tasks`、`get_task`、`create_task`、`followup_task`、`finalize_dispatch`。认任务时读返回里的 `contract_brief`，不改契约。思路见 [`docs/task-contract-design.md`](docs/task-contract-design.md)。
 
 ## HTTP API 一览
 
@@ -298,7 +308,7 @@ Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_o
 | `GET /health` | 诊断探活：db_path、bot 长连接、队列概览 |
 | `POST /bots/register` · `GET /bots` · `GET /bots/{id}` | 注册 / 列表 / 详情 |
 | `POST /bots/{id}/chats` | 绑定业务群 |
-| `POST /tasks` · `GET /tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/followups` · `POST /tasks/{id}/board-messages` | 任务（board-messages 只贴台账、不记进展） |
+| `POST /tasks` · `GET /tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/contract` · `POST /tasks/{id}/followups` · `POST /tasks/{id}/board-messages` | 任务与语义契约（contract 不记进展、不贴台账；board-messages 只贴台账） |
 | `POST /tasks/{id}/clues` · `GET /tasks/{id}/clues` · `GET /tasks/{id}/clues/{clue_id}` · `GET /clues?kind=&ref_key=` | 任务线索索引（读写） |
 | `PUT\|GET\|DELETE /chat-projects/{chat_id}` · `GET /chat-projects` | 群 ↔ 项目 |
 | `POST /dispatcher/runs` · `GET /dispatcher/runs/{inbound_id}` | 分发留痕；create/followup 成功时 Gateway 顺带短回执（`reply_sync`） |

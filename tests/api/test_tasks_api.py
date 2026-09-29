@@ -327,3 +327,40 @@ def test_clues_api_crud_and_reverse(client):
         json={"kind": "cursor_session", "ref_key": "x"},
     )
     assert missing.status_code == 404
+
+
+def test_contract_api_rejects_revision_and_replaces(client):
+    created = client.post(
+        "/tasks",
+        json={"title": "契约", "kind": "readonly", "one_liner": "初稿"},
+    )
+    assert created.status_code == 200
+    task = created.json()["task"]
+    assert task["contract_revision"] == 1
+    assert task["contract_persisted"] is True
+    assert "revision" not in task["contract"]
+
+    rejected = client.post(
+        f"/tasks/{task['id']}/contract",
+        json={"title": "契约", "revision": 9},
+    )
+    assert rejected.status_code == 400
+
+    replaced = client.post(
+        f"/tasks/{task['id']}/contract",
+        json={
+            "title": "契约已替换",
+            "objective": {"status": "provisional", "statement": "替换后的承诺"},
+            "scope": {"completeness": "open", "included": []},
+        },
+    )
+    assert replaced.status_code == 200
+    body = replaced.json()["task"]
+    assert body["contract_revision"] == 2
+    assert body["title"] == "契约已替换"
+    assert body["one_liner"] == "替换后的承诺"
+    assert body["contract"]["task_id"] == f"task_{task['id']}"
+    listed = client.get("/tasks")
+    row = next(item for item in listed.json()["tasks"] if item["id"] == task["id"])
+    assert row["contract_revision"] == 2
+    assert "contract" not in row

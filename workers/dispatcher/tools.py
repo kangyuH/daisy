@@ -15,8 +15,71 @@ from workers.dispatcher.state import (
 )
 
 
-def _trim_task(task: dict[str, Any]) -> dict[str, Any]:
+def _scope_values(items: Any, *, limit: int = 8) -> list[str]:
+    values: list[str] = []
+    if not isinstance(items, list):
+        return values
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        if value:
+            values.append(value)
+        if len(values) >= limit:
+            break
+    return values
+
+
+def contract_brief(task: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Read-only identity summary. Does not include a writable contract body."""
+    contract = task.get("contract")
+    if not isinstance(contract, dict):
+        return None
+    objective = contract.get("objective") if isinstance(contract.get("objective"), dict) else {}
+    scope = contract.get("scope") if isinstance(contract.get("scope"), dict) else {}
+    acceptance = (
+        contract.get("acceptance") if isinstance(contract.get("acceptance"), dict) else {}
+    )
+    subject = contract.get("subject") if isinstance(contract.get("subject"), dict) else {}
+    origin = contract.get("origin") if isinstance(contract.get("origin"), dict) else {}
+    gaps = contract.get("gaps") if isinstance(contract.get("gaps"), list) else []
+    questions: list[str] = []
+    for gap in gaps:
+        if not isinstance(gap, dict):
+            continue
+        question = str(gap.get("question") or "").strip()
+        if question:
+            questions.append(question)
+        if len(questions) >= 8:
+            break
+    parents: list[str] = []
+    sources = origin.get("sources") if isinstance(origin.get("sources"), list) else []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        if source.get("role") != "parent_task":
+            continue
+        ref = str(source.get("ref") or "").strip()
+        if ref:
+            parents.append(ref)
     return {
+        "subject_status": subject.get("status"),
+        "object_type": subject.get("object_type"),
+        "object_ref": subject.get("object_ref"),
+        "occurrence": subject.get("occurrence"),
+        "objective_statement": objective.get("statement"),
+        "objective_status": objective.get("status"),
+        "scope_completeness": scope.get("completeness"),
+        "included": _scope_values(scope.get("included")),
+        "excluded": _scope_values(scope.get("excluded")),
+        "acceptance_completeness": acceptance.get("completeness"),
+        "gap_questions": questions,
+        "parent_task_refs": parents,
+    }
+
+
+def _trim_task(task: dict[str, Any]) -> dict[str, Any]:
+    trimmed: dict[str, Any] = {
         "id": task.get("id"),
         "title": task.get("title"),
         "one_liner": task.get("one_liner"),
@@ -27,7 +90,13 @@ def _trim_task(task: dict[str, Any]) -> dict[str, Any]:
         "project_id": task.get("project_id"),
         "bot_id": task.get("bot_id"),
         "updated_at": task.get("updated_at"),
+        "contract_revision": task.get("contract_revision"),
+        "contract_brief": contract_brief(task),
     }
+    error = task.get("contract_brief_error")
+    if error:
+        trimmed["contract_brief_error"] = str(error)
+    return trimmed
 
 
 def _err(msg: str) -> str:
@@ -145,7 +214,22 @@ def build_dispatcher_tools(
         except GatewayError as exc:
             return _err(str(exc))
 
-        items = [_trim_task(t) for t in list(merged.values())[:lim]]
+        rows = list(merged.values())[:lim]
+        detailed: list[dict[str, Any]] = []
+        for row in rows:
+            tid = row.get("id")
+            if tid is None or isinstance(row.get("contract"), dict):
+                detailed.append(row)
+                continue
+            try:
+                full = client.get_task(int(tid), events_limit=1)
+            except GatewayError as exc:
+                failed = dict(row)
+                failed["contract_brief_error"] = str(exc)
+                detailed.append(failed)
+                continue
+            detailed.append(full or row)
+        items = [_trim_task(t) for t in detailed]
         state.note_tool("list_open_tasks", {"count": len(items)})
         return _ok({"tasks": items, "count": len(items)})
 
@@ -312,13 +396,21 @@ def build_dispatcher_tools(
         ),
         StructuredTool.from_function(
             name="list_open_tasks",
-            description="List non-terminal tasks filtered by thread/chat/project.",
+            description=(
+                "List non-terminal tasks filtered by thread/chat/project. "
+                "Each item includes a read-only contract_brief for matching. "
+                "contract_brief_error means the brief was not loaded; "
+                "do not match that row by title. Do not edit the contract."
+            ),
             func=list_open_tasks,
             args_schema=ListOpenTasksArgs,
         ),
         StructuredTool.from_function(
             name="get_task",
-            description="Get one task by id (marks it as seen for followup).",
+            description=(
+                "Get one task by id, including contract_brief (read-only). "
+                "Marks it as seen for followup."
+            ),
             func=get_task,
             args_schema=GetTaskArgs,
         ),
