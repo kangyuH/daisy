@@ -1,0 +1,115 @@
+# Daisy Task 语义契约模板（讨论稿）
+# 目的：描述一份有边界、可验收的结果承诺；不记录运行、消息往来或事件流水。
+#
+# 填写规则：
+# 1. status 使用 confirmed / provisional / open / conflicted / not_applicable。
+#    confirmed：有权提出或决定此约定的人已明确；provisional：有依据的暂定推断；
+#    open：待澄清；conflicted：存在互不相容的说法；not_applicable：明确不适用。
+# 2. 不要把空数组解释成“已确认没有”。列表的 completeness 才表示是否列全。
+# 3. basis_refs 只放证据或原始材料的引用标识；具体材料由后续索引层管理。
+# 4. party_id 指向 parties 中的人或组织；有权验收、能提供信息、接收反馈可以是不同对象。
+# 5. task_id 是系统标识；同一性由 subject + objective + scope + acceptance 判断，
+#    不能单凭 task_id、标题、来源、群聊、thread 或 Agent 会话判断。
+
+schema_version: "0.1"
+task_id: null                 # 创建后由系统赋值；例如 task_123
+title: null                   # 便于阅读的摘要，不参与语义同一性判断
+
+# Task 为什么存在。一个 Task 可有多个来源；新增来源不必新建 Task。
+origin:
+  initial_problem: null       # 触发时的原始业务问题，尽量贴近提出者用语
+  sources: []                 # 每项：{role: trigger|supporting|parent_task,
+                              #        kind: feishu_message|ticket|task|other,
+                              #        ref: 外部定位符或 task_id, note: null}
+  # 来源属于缘由；下面的反馈位置和验收方须分别约定。
+
+# 同一性锚点：所涉业务对象，以及这一次具体问题/批次/事故。
+subject:
+  status: open
+  object_type: null           # 例如：渠道收入报表、客户工单、线上接口
+  object_ref: null            # 有稳定业务 ID 时填写；没有可保持 null
+  occurrence: null            # 限定本次问题的日期、批次、事故等；不要泛化为整个对象
+  description: null
+  authority_party_id: null   # 谁确认这就是本任务要负责的对象
+  basis_refs: []
+
+# 目标回答“希望什么业务结果成立”，不把研究/规划/执行阶段写成任务身份。
+objective:
+  status: open
+  statement: null             # 一句话描述结果承诺，尽量使用可观察的结果
+  intended_use: null          # 结果用来做什么；可为 null
+  authority_party_id: null
+  basis_refs: []
+
+# 范围回答“管到哪里”。所有维度都可以包含对象、日期、环境、人群、系统、区域等。
+scope:
+  completeness: open          # confirmed 表示纳入、排除与约束已足以界定本次承诺
+  included: []                # 每项：{dimension: null, value: null, status: open,
+                              #        authority_party_id: null, basis_refs: []}
+  excluded: []                # 同 included；明确写出“本任务不负责修复”等排除项
+  constraints: []             # 同 included；例如期限、业务口径、权限边界
+
+# 验收回答“怎样知道完成”，并记录谁有权作最后决定。
+acceptance:
+  completeness: open
+  result_criteria: []         # 每项：{id: c1, statement: 可检查的结果条件,
+                              #        evidence_required: [], status: open,
+                              #        authority_party_id: null, basis_refs: []}
+  deliverables: []            # 每项：{name: null, required_content: [], format: null,
+                              #        status: open, authority_party_id: null,
+                              #        basis_refs: []}
+  decision:
+    status: open
+    mode: null                # self_check | human_approval；禁止凭空假设可以自行关闭
+    approver_party_ids: []    # human_approval 时指定有权接受结果的人
+    rule: null                # 例如：所有 c1-c3 满足且负责人确认
+    basis_refs: []
+  # 探索性任务可约定查不到根因时的合法收尾方式；不等于受阻就自动完成。
+  investigation_exit:
+    status: open              # 可用 not_applicable 表示本任务并非探索性任务
+    checks_required: []       # 必须完成哪些核查
+    report_required: []       # 例如：已排除项、剩余假设、缺少的材料
+    approver_party_ids: []    # 谁决定是否接受“尚未定位”的结果
+    basis_refs: []
+
+# 结果交给谁、交到哪里；触发来源的 thread 只能作为可调整的默认推断。
+feedback:
+  recipients:
+    status: open
+    party_ids: []
+    basis_refs: []
+  destination:
+    status: open
+    kind: null                # feishu_thread | ticket | parent_task | other
+    ref: null                 # thread ID、工单 ID、父任务 ID 等
+    basis_refs: []
+  content:
+    status: open
+    requirements: []          # 反馈需包含哪些结论、证据、限制和下一步建议
+    basis_refs: []
+
+# 一个主体可拥有多个角色；同一角色也可由多方承担。外部支持方须写明依赖。
+parties: []                   # 每项：
+                              # - party_id: p1
+                              #   actor: {kind: person|team|system, ref: null, name: null}
+                              #   roles: [requester|approver|recipient|external_support]
+                              #   responsibility: null
+                              #   expected_input: []   # 希望其提供的信息、权限或决定
+                              #   decision_dependencies: []  # 哪些判断取决于其答复
+
+# 不完整约定要显式登记。研究可补技术事实；业务取舍需要有权方确认。
+gaps: []                      # 每项：
+                              # - id: g1
+                              #   question: null
+                              #   impact: null       # 不澄清会怎样影响目标/范围/验收
+                              #   clarifier_party_ids: []
+                              #   can_do_before_resolution: []
+                              #   cannot_commit_before_resolution: []
+                              #   competing_claims: []  # 冲突时各说法及 basis_refs
+                              #   basis_refs: []
+
+# 给读取此契约的 Agent 的判断规则：
+# - 先根据 subject、objective、scope、acceptance 判断新消息是补充、变更还是新任务。
+# - 若新增可独立验收、可独立放弃的结果，考虑另建相关 Task。
+# - provisional 不会自动变成 confirmed；补齐证据与业务确认是不同的事。
+# - 关键缺口未解决时，按 gaps 的允许范围推进，不自行扩大承诺或宣布完成。
