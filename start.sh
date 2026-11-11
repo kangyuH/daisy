@@ -79,20 +79,36 @@ else
   echo $! >"$WORKER_PID_FILE"
 fi
 
-if is_running "$AGENT_WORKER_PID_FILE"; then
-  echo "[start] agent worker already running pid=$(cat "$AGENT_WORKER_PID_FILE")"
+auto_research_enabled() {
+  "$PYTHON" -c 'from app.core.settings import agent_auto_research_enabled; raise SystemExit(0 if agent_auto_research_enabled() else 1)'
+}
+
+if auto_research_enabled; then
+  if is_running "$AGENT_WORKER_PID_FILE"; then
+    echo "[start] agent worker already running pid=$(cat "$AGENT_WORKER_PID_FILE")"
+  else
+    echo "[start] starting agent worker → $AGENT_WORKER_LOG"
+    (
+      export WORKER_IMPL=agent
+      export WORKER_ID="${AGENT_WORKER_ID:-agent-1}"
+      nohup "$PYTHON" "$ROOT/run_worker.py" >>"$AGENT_WORKER_LOG" 2>&1 &
+      echo $! >"$AGENT_WORKER_PID_FILE"
+    )
+  fi
 else
-  echo "[start] starting agent worker → $AGENT_WORKER_LOG"
-  (
-    export WORKER_IMPL=agent
-    export WORKER_ID="${AGENT_WORKER_ID:-agent-1}"
-    nohup "$PYTHON" "$ROOT/run_worker.py" >>"$AGENT_WORKER_LOG" 2>&1 &
-    echo $! >"$AGENT_WORKER_PID_FILE"
-  )
+  if is_running "$AGENT_WORKER_PID_FILE"; then
+    echo "[start] AGENT_AUTO_RESEARCH is off but agent worker still running pid=$(cat "$AGENT_WORKER_PID_FILE")" >&2
+    exit 1
+  fi
+  echo "[start] agent worker skipped (AGENT_AUTO_RESEARCH off)"
 fi
 
 echo "[start] done"
 echo "  gateway      pid=$(cat "$GATEWAY_PID_FILE")  log=$GATEWAY_LOG"
 echo "  worker       pid=$(cat "$WORKER_PID_FILE")  log=$WORKER_LOG"
-echo "  agent_worker pid=$(cat "$AGENT_WORKER_PID_FILE")  log=$AGENT_WORKER_LOG"
+if is_running "$AGENT_WORKER_PID_FILE"; then
+  echo "  agent_worker pid=$(cat "$AGENT_WORKER_PID_FILE")  log=$AGENT_WORKER_LOG"
+else
+  echo "  agent_worker skipped (AGENT_AUTO_RESEARCH off)"
+fi
 echo "  stop:   $ROOT/stop.sh"

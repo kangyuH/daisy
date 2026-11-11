@@ -35,6 +35,7 @@ class Settings:
     lark_user_profile: str = ""
     default_bot_id: str = ""
     agent_require_plan_before_exec: bool = True
+    agent_auto_research: bool = True
     ledger_command_bot_id: str = ""
     queue_lease_seconds: int = 120
     queue_heartbeat_seconds: int = 30
@@ -47,6 +48,9 @@ class Settings:
         require_plan = os.environ.get(
             "AGENT_REQUIRE_PLAN_BEFORE_EXEC", "true"
         ).strip().lower()
+        auto_research = os.environ.get(
+            "AGENT_AUTO_RESEARCH", "true"
+        ).strip().lower()
         return cls(
             host=os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0",
             port=int(os.environ.get("PORT", "8000")),
@@ -57,6 +61,8 @@ class Settings:
             lark_user_profile=os.environ.get("LARK_USER_PROFILE", "").strip(),
             default_bot_id=os.environ.get("DEFAULT_BOT_ID", "").strip(),
             agent_require_plan_before_exec=require_plan
+            not in ("0", "false", "no", "off"),
+            agent_auto_research=auto_research
             not in ("0", "false", "no", "off"),
             ledger_command_bot_id=os.environ.get(
                 "LEDGER_COMMAND_BOT_ID", ""
@@ -94,6 +100,10 @@ def agent_lease_seconds() -> int:
 
 def agent_require_plan_before_exec() -> bool:
     return get_settings().agent_require_plan_before_exec
+
+
+def agent_auto_research_enabled() -> bool:
+    return get_settings().agent_auto_research
 
 
 def ledger_command_bot_id() -> str:

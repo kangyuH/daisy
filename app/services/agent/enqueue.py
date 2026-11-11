@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from app.core.settings import agent_auto_research_enabled
 from app.services.agent.constants import MODE_AUTO_RESEARCH
 from app.services.queue.service import QUEUE_AGENT, ItemQueue
 
@@ -20,6 +21,12 @@ async def enqueue_auto_research(
     force: bool = False,
 ) -> dict[str, Any]:
     """Enqueue one auto-research job per task (idempotent)."""
+    if not agent_auto_research_enabled():
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "auto_research_disabled",
+        }
     tid = int(task_id)
     src = (source or trigger or "create").strip() or "create"
     payload: dict[str, Any] = {

@@ -119,6 +119,30 @@ def test_deduped_task_does_not_reopen_done_auto_research(client):
     assert payload["research_enqueue"]["deduped"] is True
 
 
+def test_create_task_skips_auto_research_when_disabled(client, db_file, monkeypatch):
+    monkeypatch.setenv("AGENT_AUTO_RESEARCH", "false")
+    created = client.post(
+        "/tasks",
+        json={"title": "不自动调研", "kind": "readonly"},
+    )
+    assert created.status_code == 200
+    payload = created.json()
+    task_id = int(payload["task"]["id"])
+    assert payload["research_enqueue"]["ok"] is True
+    assert payload["research_enqueue"]["skipped"] is True
+    assert payload["research_enqueue"]["reason"] == "auto_research_disabled"
+
+    conn = connect_sync(str(db_file))
+    try:
+        row = conn.execute(
+            "SELECT id FROM queue_items WHERE idempotency_key = ?",
+            (f"agent:research:{task_id}",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is None
+
+
 def test_chat_project_bind_inherit(client):
     put = client.put(
         "/chat-projects/oc_patch",

@@ -10,6 +10,12 @@ from app.services.bots.store import STATUS_READY, BotStore
 from app.infra.db import init_db_sync
 
 
+@pytest.fixture(autouse=True)
+def _auto_research_enabled_by_default(monkeypatch):
+    """Keep product default on. This instance's .env may disable auto-research."""
+    monkeypatch.setenv("AGENT_AUTO_RESEARCH", "true")
+
+
 @pytest.fixture()
 def db_file(tmp_path, monkeypatch):
     path = tmp_path / "test.db"
