@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from app.services.im.mentions import reply_to_message_id
 from workers.client import GatewayClient, GatewayError
 from workers.dispatcher.agent import build_agent_executor, run_dispatcher_agent
 from workers.dispatcher.llm.factory import (
@@ -148,6 +149,11 @@ class DispatcherWorker:
                 )
             return WorkerResult.skip("already dispatched; side effects repaired")
 
+        raw = payload.get("raw")
+        reply_target_id = _payload_str(payload, "reply_to_message_id")
+        if not reply_target_id and isinstance(raw, dict):
+            reply_target_id = reply_to_message_id(raw) or ""
+
         state = RunState(
             inbound_id=inbound_id,
             message_id=_payload_str(payload, "message_id"),
@@ -156,6 +162,7 @@ class DispatcherWorker:
             bot_id=_payload_str(payload, "bot_id"),
             sender_open_id=_payload_str(payload, "sender_open_id"),
             content_summary=_content_summary(payload.get("content")),
+            reply_to_message_id=reply_target_id,
         )
 
         try:
@@ -175,6 +182,7 @@ class DispatcherWorker:
                 "message_id": state.message_id,
                 "chat_id": state.chat_id,
                 "thread_id": state.thread_id,
+                "reply_to_message_id": state.reply_to_message_id,
                 "bot_id": state.bot_id,
                 "sender_open_id": state.sender_open_id,
                 "content_summary": state.content_summary,
@@ -225,6 +233,7 @@ class DispatcherWorker:
             "thread_id": state.thread_id,
             "seen_task_ids": sorted(state.seen_task_ids),
             "tool_trace": state.tool_trace,
+            "reply_target": state.reply_target,
         }
         try:
             self.client.record_dispatch_run(

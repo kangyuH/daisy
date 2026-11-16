@@ -78,6 +78,22 @@ def should_enqueue(
     return any(m in targets for m in mention_ids)
 
 
+def reply_to_message_id(
+    raw: dict[str, Any], message: dict[str, Any] | None = None
+) -> str | None:
+    if message is None:
+        for container in (raw, raw.get("event"), raw.get("data")):
+            if isinstance(container, dict) and isinstance(container.get("message"), dict):
+                message = container["message"]
+                break
+    for field in ("parent_id", "reply_to"):
+        for data in (message or {}, raw):
+            value = data.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 def normalize_inbound_event(bot: "BotConfig", raw: dict[str, Any]) -> dict[str, Any]:
     """Flatten common event shapes into a stable inbound payload."""
     event = raw.get("event") if isinstance(raw.get("event"), dict) else None
@@ -139,11 +155,8 @@ def normalize_inbound_event(bot: "BotConfig", raw: dict[str, Any]) -> dict[str, 
         "message_id": message_id,
         "chat_id": chat_id,
         "thread_id": raw.get("thread_id") or message.get("thread_id"),
-        "root_id": raw.get("root_id")
-        or message.get("root_id")
-        or raw.get("reply_to")
-        or message.get("reply_to")
-        or message.get("parent_id"),
+        "root_id": raw.get("root_id") or message.get("root_id"),
+        "reply_to_message_id": reply_to_message_id(raw, message),
         "content": raw.get("content") or message.get("content"),
         "message_type": raw.get("message_type") or message.get("message_type"),
         "sender": sender,

@@ -18,6 +18,7 @@ from app.infra.events.manager import BotManager
 from app.services.bots.models import load_bots_from_db
 from app.services.bots.store import BotStore
 from app.services.dispatcher.store import DispatchRunStore
+from app.services.im.task_links import MessageTaskStore
 from app.services.queue.service import ItemQueue
 from app.services.tasks.store import TaskStore
 from app.services.tasks.workspace import workspace_root
@@ -62,6 +63,7 @@ def create_app(*, testing: bool = False) -> FastAPI:
         ws_root.mkdir(parents=True, exist_ok=True)
         app.state.task_store = TaskStore(str(path), workspace_root=str(ws_root))
         app.state.dispatch_run_store = DispatchRunStore(str(path))
+        app.state.message_task_store = MessageTaskStore(str(path))
         app.state.task_board_enabled = not testing
         app.state.dispatch_ack_enabled = not testing
         app.state.auth_user_open_id = None

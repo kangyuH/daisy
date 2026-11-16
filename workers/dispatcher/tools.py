@@ -155,6 +155,7 @@ def build_dispatcher_tools(
         try:
             data = client.fetch_context(
                 message_id=state.message_id or None,
+                reply_to_message_id=state.reply_to_message_id or None,
                 chat_id=state.chat_id or None,
                 thread_id=state.thread_id or None,
                 before=min(max(int(before), 0), 30),
@@ -162,6 +163,12 @@ def build_dispatcher_tools(
             )
         except GatewayError as exc:
             return _err(str(exc))
+        target = data.get("reply_target")
+        if isinstance(target, dict):
+            state.reply_target = {
+                "message_id": state.reply_to_message_id,
+                "task_refs": target.get("task_refs", []),
+            }
         state.note_tool("fetch_message_context", {"before": before, "after": after})
         return _ok(data)
 
@@ -361,6 +368,7 @@ def build_dispatcher_tools(
             "thread_id": state.thread_id,
             "seen_task_ids": sorted(state.seen_task_ids),
             "tool_trace": state.tool_trace,
+            "reply_target": state.reply_target,
             "content_summary": state.content_summary[:500],
         }
         try:
@@ -385,7 +393,10 @@ def build_dispatcher_tools(
     return [
         StructuredTool.from_function(
             name="fetch_message_context",
-            description="Fetch Feishu message context around the inbound message.",
+            description=(
+                "Fetch Feishu context with task_refs and the direct reply_target, "
+                "including a target outside the surrounding message window."
+            ),
             func=fetch_message_context,
             args_schema=FetchContextArgs,
         ),

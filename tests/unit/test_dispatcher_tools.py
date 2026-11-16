@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from workers.client import GatewayError
 from workers.dispatcher.prompts import SYSTEM_PROMPT
 from workers.dispatcher.state import RunState
@@ -98,6 +100,44 @@ def test_create_forces_noted_and_finalize():
     assert fin["ok"] is True
     assert state.finalized is True
     client.record_dispatch_run.assert_called_once()
+
+
+@pytest.mark.parametrize("decision", ["followup", "create"])
+def test_dispatch_records_quoted_task_as_evidence(decision):
+    client = MagicMock()
+    source = {"task_id": 123, "source": "outbound", "status": "done"}
+    client.fetch_context.return_value = {
+        "reply_target": {"message_id": "om_delivery", "task_refs": [source]},
+        "messages": [
+            {"message_id": "om_other", "task_refs": [{"task_id": 234, "source": "inbound"}]},
+        ],
+    }
+    client.get_task.return_value = {"id": 123, "status": "done", "contract": {}}
+    client.create_task.return_value = {"id": 345, "title": "新交付"}
+    client.add_followup.return_value = {"task": {"id": 123, "status": "done"}}
+    client.record_dispatch_run.return_value = {"decision": decision}
+    state = RunState(inbound_id=1, message_id="om_question", reply_to_message_id="om_delivery")
+    tools = _tools(client, state)
+
+    ctx = json.loads(tools["fetch_message_context"].invoke({}))["data"]
+    assert ctx["reply_target"]["task_refs"] == [source]
+    assert client.fetch_context.call_args.kwargs["reply_to_message_id"] == "om_delivery"
+    assert json.loads(tools["get_task"].invoke({"task_id": 123}))["data"]["status"] == "done"
+    if decision == "followup":
+        assert json.loads(
+            tools["followup_task"].invoke({"task_id": 123, "message": "文件是否含 X"})
+        )["ok"]
+        assert "status" not in client.add_followup.call_args.kwargs
+    else:
+        assert json.loads(
+            tools["create_task"].invoke({"title": "额外交付物", "reason": "独立验收"})
+        )["ok"]
+    assert json.loads(
+        tools["finalize_dispatch"].invoke({"decision": decision, "reason": "核对交付消息"})
+    )["ok"]
+    run = client.record_dispatch_run.call_args.kwargs
+    assert run["task_id"] == (123 if decision == "followup" else 345)
+    assert run["evidence"]["reply_target"] == {"message_id": "om_delivery", "task_refs": [source]}
 
 
 def test_second_write_rejected():

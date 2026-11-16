@@ -315,7 +315,9 @@ Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_o
 | `POST /im/send` · `/im/reply` · `/im/respond` · `/im/messages/context` | 发消息 / 按 inbound 回复 / 拉上下文 |
 | `POST /queue/{name}/enqueue\|claim\|ack\|nack` · `GET /queue/{name}/stats` | 队列（`inbound` = 消息队列） |
 
-`/im/respond`：`{"inbound_id","text","mention_open_ids?"}` — 按入库 payload 的 `thread_id` 自动话题/引用回复。
+`/im/respond` 按 `inbound_id` 找到原消息，自动选择话题或引用回复。三个 IM 写接口都可传 `task_id`，将新发飞书消息关联到任务。`/im/send` 和 `/im/reply` 的任务消息需要传稳定的 `idempotency_key`（最多 50 字符）。`/im/respond` 默认使用 `inbound:{id}`，省略 `task_id` 时可沿用已有的分发归属。任务消息的结果包含 `task_link`，若状态为 `unrecorded`，可按原因处理，写入失败时用同一个幂等键重试。
+
+`/im/messages/context` 返回每条消息的 `task_refs`，可传 `reply_to_message_id` 获取同群的直接引用目标 `reply_target`。Dispatcher 优先核对引用消息对应的任务契约。
 
 ## 开发自测
 

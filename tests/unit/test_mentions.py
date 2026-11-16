@@ -58,3 +58,12 @@ def test_normalize_inbound_open_ids():
     assert payload["sender_open_id"] == "ou_sender"
     assert payload["message_id"] == "om_1"
     assert payload["thread_id"] == "omt_1"
+
+
+def test_normalize_keeps_reply_parent_separate_from_root():
+    bot = BotConfig(id="gemi", name="Gemi", app_id="cli_x", app_secret="s")
+    payload = normalize_inbound_event(
+        bot, {"message": {"root_id": "om_root", "parent_id": "om_parent"}}
+    )
+    assert payload["root_id"] == "om_root"
+    assert payload["reply_to_message_id"] == "om_parent"
