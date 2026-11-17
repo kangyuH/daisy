@@ -363,6 +363,30 @@ curl -fsS http://127.0.0.1:8000/im/reply \
 
 `/im/messages/context` 返回每条消息的 `task_refs`，可传 `reply_to_message_id` 获取同群的直接引用目标 `reply_target`。Dispatcher 优先核对引用消息对应的任务契约。
 
+### MCP
+
+在 `.env` 设置独立的 `GATEWAY_MCP_TOKEN` 并启动 Gateway。客户端用 Streamable HTTP 连接
+`http://127.0.0.1:8000/mcp`，发送 `Authorization: Bearer <GATEWAY_MCP_TOKEN>`。
+MCP 初始化成功后，未配置 token 时 `/mcp` 返回 503。SDK 导入或 MCP 初始化失败时，
+Gateway 默认记录告警，以 REST 模式启动，此时 `/mcp` 返回 404。部署要求 MCP 正常初始化时，
+设置 `GATEWAY_MCP_REQUIRED=true` 让这些错误中止启动。
+
+远程连接时，把客户端访问的主机和端口加入 `GATEWAY_MCP_ALLOWED_HOSTS`，多个值用逗号分隔。
+浏览器客户端发送的 Origin 可用 `GATEWAY_MCP_ALLOWED_ORIGINS` 指定。
+工具默认可访问已绑定的业务群。设置 `GATEWAY_MCP_CHAT_IDS` 可进一步限制群范围。
+消息上下文里的任务引用和回复的自动任务关联只对同群任务生效。
+
+| 工具 | 用途 |
+|------|------|
+| `list_tasks` | 按业务群查询近期任务，可按状态筛选 |
+| `get_task` | 用任务 ID 查详情、契约和近期事件 |
+| `get_message_context` | 用入站队列条目 ID（`inbound_id`）读取飞书上下文及直接引用目标 |
+| `append_task_followup` | 追加任务跟进并同步台账。重试传相同 `idempotency_key` |
+| `reply_to_inbound` | 用 `inbound_id` 回复原消息，支持文本和已有飞书媒体 key 等 JSON 消息格式。默认按 `inbound_id` 去重，同一消息的不同回复可传各自稳定的 `idempotency_key` |
+
+从飞书消息建出的任务可以用任务详情的 `created_from_inbound_id` 找回首条入站消息。
+Dispatcher 和 Worker 通过内部 REST 领取、续租和确认队列项。
+
 ## 开发自测
 
 ```bash

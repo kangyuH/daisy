@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.infra.db import init_db_sync
+from app.services.tasks import gateway as task_gateway
 from app.services.tasks.models import (
     STATUS_DONE,
     STATUS_NOTED,
@@ -92,6 +94,41 @@ def test_followup_status_and_timeline(task_store: TaskStore):
     assert len(lines) == 2
     md = (ws / "TASK.md").read_text(encoding="utf-8")
     assert "等对方给 CSV" in md
+
+
+async def test_followup_retry_reuses_event_and_repairs_board(task_store: TaskStore):
+    task = task_store.create_task(title="t1", kind="readonly")
+    board = AsyncMock()
+    board.sync_followup.side_effect = [
+        {"ok": False, "error": "temporary failure"},
+        {"ok": True, "message_id": "om_reply"},
+    ]
+    followup = {"message": "Request received", "idempotency_key": "request-1"}
+
+    first = await task_gateway.append_followup(task_store, board, task["id"], **followup)
+    recovered = await task_gateway.append_followup(
+        task_store, board, task["id"], **followup
+    )
+    replay = await task_gateway.append_followup(task_store, board, task["id"], **followup)
+
+    assert not first["board_sync"]["ok"]
+    assert recovered["board_sync"] == replay["board_sync"] == {
+        "ok": True,
+        "message_id": "om_reply",
+    }
+    assert first["event"] == recovered["event"] == replay["event"]
+    assert board.sync_followup.await_count == 2
+    ws = Path(task["workspace_path"])
+    assert len((ws / "timeline.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+
+    with pytest.raises(TaskConflictError, match="already used"):
+        await task_gateway.append_followup(
+            task_store,
+            board,
+            task["id"],
+            message="Different message",
+            idempotency_key="request-1",
+        )
 
 
 def test_terminal_status_conflict_allows_note(task_store: TaskStore):

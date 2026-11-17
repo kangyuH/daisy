@@ -45,7 +45,7 @@ def test_context_labels_history_and_resolves_direct_reply(client, quoted_message
 
     inbound_id = _dispatch_inbound(client, "om_original_delivery_request", delivery_task)
     with patch(
-        "app.api.im.respond_to_message",
+        "app.services.im.gateway.respond_to_message",
         new=AsyncMock(return_value={"data": {"message_id": "om_delivery"}}),
     ) as respond:
         response = client.post(
@@ -62,7 +62,7 @@ def test_context_labels_history_and_resolves_direct_reply(client, quoted_message
     # The other task shares the thread. The direct target can also sit outside the window.
     context = {"anchor": _message("om_question"), "messages": [_message("om_requirement")]}
     with (
-        patch("app.api.im.fetch_context", new=AsyncMock(return_value=context)),
+        patch("app.services.im.gateway.fetch_context", new=AsyncMock(return_value=context)),
         patch(
             "app.services.im.fetch.mget_messages",
             new=AsyncMock(return_value=[_message("om_delivery")]),
@@ -90,7 +90,7 @@ def test_context_labels_history_and_resolves_direct_reply(client, quoted_message
 def test_context_excludes_a_direct_reply_from_another_chat(client):
     context = {"anchor": _message("om_question"), "messages": []}
     with (
-        patch("app.api.im.fetch_context", new=AsyncMock(return_value=context)),
+        patch("app.services.im.gateway.fetch_context", new=AsyncMock(return_value=context)),
         patch(
             "app.services.im.fetch.mget_messages",
             new=AsyncMock(return_value=[_message("om_other_chat", chat_id="oc_other")]),

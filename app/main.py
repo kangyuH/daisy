@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import os
-from contextlib import asynccontextmanager
-from typing import Optional
+from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any, Optional
 
 from fastapi import FastAPI
+from starlette.routing import Route
+
+try:  # MCP is optional: a missing/incompatible SDK must not block the gateway.
+    from app.api.mcp import build_mcp
+except Exception as exc:  # pragma: no cover - depends on installed extras
+    build_mcp = None  # type: ignore[assignment]
+    _MCP_IMPORT_ERROR: Optional[BaseException] = exc
+else:
+    _MCP_IMPORT_ERROR = None
 
 from app.api.router import api_router
 from app.core.settings import (
@@ -49,8 +58,14 @@ class StubBotManager:
         return {"ok": True, "bots": [], "ts": ""}
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def create_app(*, testing: bool = False) -> FastAPI:
     load_dotenv()
+    mcp: Optional[Any] = None
+    mcp_route: Optional[Route] = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -126,8 +141,38 @@ def create_app(*, testing: bool = False) -> FastAPI:
             await manager.stop_all()
             app.state.manager = None
 
-    application = FastAPI(title="lark-superbot", lifespan=lifespan)
+    @asynccontextmanager
+    async def gateway_lifespan(app: FastAPI):
+        async with lifespan(app), AsyncExitStack() as mcp_lifespan:
+            if mcp is not None and mcp_route is not None:
+                try:
+                    await mcp_lifespan.enter_async_context(mcp.session_manager.run())
+                except Exception as exc:
+                    if _env_flag("GATEWAY_MCP_REQUIRED"):
+                        raise
+                    print(f"[gateway] MCP disabled: {exc}", flush=True)
+                else:
+                    app.router.routes.append(mcp_route)
+                    mcp_lifespan.callback(app.router.routes.remove, mcp_route)
+            yield
+
+    application = FastAPI(title="lark-superbot", lifespan=gateway_lifespan)
     application.include_router(api_router)
+
+    if build_mcp is None:
+        if _env_flag("GATEWAY_MCP_REQUIRED"):
+            raise RuntimeError(f"MCP support is unavailable: {_MCP_IMPORT_ERROR}")
+        print(f"[gateway] MCP disabled: {_MCP_IMPORT_ERROR}", flush=True)
+    else:
+        try:
+            mcp, mcp_http = build_mcp(application.state)
+            mcp_route = Route("/mcp", mcp_http, include_in_schema=False)
+        except Exception as exc:
+            mcp = None
+            if _env_flag("GATEWAY_MCP_REQUIRED"):
+                raise
+            print(f"[gateway] MCP disabled: {exc}", flush=True)
+
     return application
 
 

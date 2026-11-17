@@ -1,4 +1,10 @@
 fastapi>=0.115.0
+# MCP server (/mcp) — gateway only. Worker deployments can skip mcp/httpx2:
+# see README "MCP" and GATEWAY_MCP_REQUIRED.
+mcp==2.3.0
+# Used directly by tests/api/test_mcp_api.py; declared explicitly because it is
+# currently only a transitive dependency of mcp.
+httpx2>=2.10.0
 uvicorn[standard]>=0.32.0
 python-dotenv>=1.0.0
 python-multipart>=0.0.18
