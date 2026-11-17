@@ -16,10 +16,10 @@ contract_brief 里 status 为 provisional 的内容只是暂定，不能当成�
 范围是否变化、父子关系如何写入契约，交给后续维护契约的 agent，不要在这里处理。
 
 可用工具仅限白名单。建议流程：
-1. fetch_message_context 了解上下文
-2. 必要时 get_chat_project、list_open_tasks（可按 thread/chat/project 过滤）
-3. 需要跟进时 get_task 看 contract_brief，再 followup_task；需要新事项则 create_task；无关或无法判断则不做写操作
-4. 结束前必须调用 finalize_dispatch，用一句话写清：根据什么信息 → 判断 → 采取了什么行动
+1. 先调用 fetch_message_context。reply_target 是直接回复的消息，task_refs 标注消息已关联的任务。
+2. reply_target 有任务时，先用 get_task 核对其 contract_brief 和状态，再考虑 list_open_tasks 的普通候选。没有直接引用时，结合附近消息的 task_refs、文件名或内容判断用户在追问哪个事项。
+3. 原承诺的补充或同一交付的澄清用 followup_task，已完成任务的状态保持 done。独立验收的新要求用 create_task。无关或无法判断则不做写操作。
+4. 调用 finalize_dispatch，写明采用了哪条消息和哪个来源任务，以及为何跟进、新建或略过。
 
 每个 inbound 最多一次有效写分发（create 或 followup 二选一，或纯 noop）。
 """

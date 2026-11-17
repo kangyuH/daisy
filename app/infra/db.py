@@ -144,6 +144,15 @@ CREATE TABLE IF NOT EXISTS dispatch_runs (
 CREATE INDEX IF NOT EXISTS idx_dispatch_runs_created
     ON dispatch_runs(created_at);
 
+CREATE TABLE IF NOT EXISTS im_message_tasks (
+    message_id TEXT PRIMARY KEY NOT NULL,
+    task_id INTEGER NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id)
+);
+CREATE INDEX IF NOT EXISTS idx_queue_items_inbound_message
+    ON queue_items(json_extract(payload, '$.message_id'))
+    WHERE queue = 'inbound' AND json_valid(payload);
+
 CREATE TABLE IF NOT EXISTS task_clues (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER NOT NULL,

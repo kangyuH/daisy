@@ -111,6 +111,7 @@ class GatewayClient:
         text: str,
         mention_open_ids: Optional[list[str]] = None,
         idempotency_key: Optional[str] = None,
+        task_id: Optional[int] = None,
     ) -> dict:
         body: dict[str, Any] = {
             "inbound_id": inbound_id,
@@ -119,12 +120,15 @@ class GatewayClient:
         }
         if idempotency_key:
             body["idempotency_key"] = idempotency_key
+        if task_id is not None:
+            body["task_id"] = task_id
         return self._request("POST", "/im/respond", json=body)
 
     def fetch_context(
         self,
         *,
         message_id: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
         chat_id: Optional[str] = None,
         thread_id: Optional[str] = None,
         before: int = 10,
@@ -140,6 +144,8 @@ class GatewayClient:
             body["chat_id"] = chat_id
         if thread_id:
             body["thread_id"] = thread_id
+        if reply_to_message_id:
+            body["reply_to_message_id"] = reply_to_message_id
         return self._request("POST", "/im/messages/context", json=body)
 
     def list_tasks(

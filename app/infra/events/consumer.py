@@ -277,7 +277,7 @@ class EventConsumer:
                         msg = candidate
                         break
                 thread_id = flat.get("thread_id") or obj.get("thread_id")
-                root_id = flat.get("root_id") or obj.get("root_id") or obj.get("reply_to")
+                root_id = flat.get("root_id") or flat.get("reply_to_message_id")
                 if isinstance(msg, dict):
                     thread_id = (
                         thread_id

@@ -18,6 +18,7 @@ def test_dispatcher_skips_without_mention():
                 {
                     "bot_open_id": "ou_bot",
                     "matched_mentions": ["ou_other"],
+                    "reply_to_message_id": "om_delivery",
                 }
             )
         )
@@ -71,6 +72,8 @@ def test_dispatcher_forces_finalize_when_agent_skips_it():
                             "matched_mentions": ["ou_bot"],
                             "message_id": "om_1",
                             "chat_id": "oc_a",
+                            "root_id": "om_legacy_root",
+                            "raw": {"root_id": "om_legacy_root", "reply_to": "om_legacy_parent"},
                             "content": {"text": "你好"},
                         }
                     )
@@ -81,6 +84,7 @@ def test_dispatcher_forces_finalize_when_agent_skips_it():
     kwargs = client.record_dispatch_run.call_args.kwargs
     assert kwargs["decision"] == "noop"
     assert kwargs["reason"] == "agent_ended_without_finalize"
+    assert "'reply_to_message_id': 'om_legacy_parent'" in mock_run.call_args.kwargs["user_input"]
 
 
 def test_dispatcher_accepts_at_self():

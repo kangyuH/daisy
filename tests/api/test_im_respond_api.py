@@ -34,6 +34,7 @@ def test_im_respond_loads_inbound_item(client):
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert r.json()["inbound_id"] == inbound_id
+    assert "task_link" not in r.json()
     mock_respond.assert_awaited_once()
     kwargs = mock_respond.await_args.kwargs
     assert kwargs["message_id"] == "om_1"

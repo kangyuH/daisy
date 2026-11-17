@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from app.infra.lark.cli import run_cli_async
+from app.infra.lark.cli import LarkCliError, run_cli_async
+from app.services.im.task_links import MessageTaskStore
 
 TZ_CN = timezone(timedelta(hours=8))
 
@@ -207,6 +209,52 @@ def _slice_around(
     start = max(0, idx - before)
     end = min(len(messages), idx + 1 + after)
     return messages[start:end], anchor
+
+
+async def add_task_refs(
+    context: dict[str, Any],
+    store: MessageTaskStore,
+    *,
+    chat_id: Optional[str] = None,
+    reply_to_message_id: Optional[str] = None,
+) -> dict[str, Any]:
+    anchor = context["anchor"]
+    messages = context["messages"]
+    expected_chat = (anchor or {}).get("chat_id") or chat_id
+    target = None
+    if reply_to_message_id and expected_chat:
+        target = next(
+            (message for message in messages if _msg_id(message) == reply_to_message_id),
+            None,
+        )
+        if target is None or not target.get("chat_id"):
+            try:
+                candidates = await mget_messages([reply_to_message_id])
+            except LarkCliError:
+                candidates = []
+            target = next(
+                (message for message in candidates if _msg_id(message) == reply_to_message_id),
+                None,
+            )
+        if target and target.get("chat_id") != expected_chat:
+            target = None
+
+    message_ids = {
+        message_id
+        for message in [*messages, anchor, target]
+        if message and (message_id := _msg_id(message))
+    }
+    refs = await asyncio.to_thread(store.find_refs, message_ids)
+
+    def annotate(message: dict[str, Any]) -> dict[str, Any]:
+        return {**message, "task_refs": refs.get(_msg_id(message), [])}
+
+    return {
+        **context,
+        "anchor": annotate(anchor) if anchor else None,
+        "messages": [annotate(message) for message in messages],
+        "reply_target": annotate(target) if target else None,
+    }
 
 
 async def fetch_context(

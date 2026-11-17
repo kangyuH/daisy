@@ -27,6 +27,8 @@ class RunState:
     bot_id: str = ""
     sender_open_id: str = ""
     content_summary: str = ""
+    reply_to_message_id: str = ""
+    reply_target: Optional[dict[str, Any]] = None
 
     seen_task_ids: Set[int] = field(default_factory=set)
     created_task_id: Optional[int] = None
