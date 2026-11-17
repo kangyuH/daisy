@@ -315,7 +315,51 @@ Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_o
 | `POST /im/send` · `/im/reply` · `/im/respond` · `/im/messages/context` | 发消息 / 按 inbound 回复 / 拉上下文 |
 | `POST /queue/{name}/enqueue\|claim\|ack\|nack` · `GET /queue/{name}/stats` | 队列（`inbound` = 消息队列） |
 
-`/im/respond` 按 `inbound_id` 找到原消息，自动选择话题或引用回复。三个 IM 写接口都可传 `task_id`，将新发飞书消息关联到任务。`/im/send` 和 `/im/reply` 的任务消息需要传稳定的 `idempotency_key`（最多 50 字符）。`/im/respond` 默认使用 `inbound:{id}`，省略 `task_id` 时可沿用已有的分发归属。任务消息的结果包含 `task_link`，若状态为 `unrecorded`，可按原因处理，写入失败时用同一个幂等键重试。
+### 业务群发消息与回复
+
+`POST /im/send` 按 `chat_id` 发新消息。`POST /im/reply` 按 `message_id` 引用原消息，设 `reply_in_thread: true` 可在话题内回复。两者都可用 `bot_id` 选择业务 bot。`POST /im/respond` 按 `inbound_id` 取原消息和业务 bot，自动选择话题或引用回复。
+
+JSON 请求中的纯文本使用顶层 `text`。发送其他格式时，使用一个 `message` 对象代替 `text`。
+
+| 格式 | `message` 示例 |
+|------|----------------|
+| Markdown | `{"type":"markdown","text":"## 进展\n- 已完成"}` |
+| 图片 | `{"type":"image","image_key":"img_xxx"}` |
+| 文件 | `{"type":"file","file_key":"file_xxx"}` |
+| 音频 | `{"type":"audio","file_key":"file_xxx"}` |
+| 视频 | `{"type":"video","file_key":"file_xxx","image_key":"img_xxx"}`，`image_key` 可省略 |
+| 卡片 | `{"type":"card","content":{…}}`，`content` 是[飞书卡片 JSON 对象](https://open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json) |
+
+纯文本和 Markdown 支持 `mention_open_ids`，`/im/respond` 也会在这两种格式中自动 `@` 原发送人。图片、文件、音视频和卡片消息可使用对应的飞书资源或卡片内容。资源 key 须可供发送消息的 bot 使用。
+
+```bash
+curl -fsS http://127.0.0.1:8000/im/send \
+  -H 'Content-Type: application/json' \
+  -d '{"chat_id":"oc_xxx","bot_id":"1","message":{"type":"markdown","text":"## 进展\n- 已完成"}}'
+```
+
+图片和文件可直接用 `multipart/form-data` 上传并发送。三个接口使用相同的表单字段。
+
+| 字段 | 内容 |
+|------|------|
+| `payload` | JSON 字符串，包含目标和通用选项，如 `message_id`、`bot_id`、`reply_in_thread`、`task_id`、`idempotency_key` |
+| `type` | `image` 或 `file` |
+| `file` | 一个文件的二进制内容，图片上限 10 MiB，文件上限 30 MiB |
+
+直接上传要求业务 bot 开通飞书的图片或文件资源上传权限，例如 `im:resource`。音频、视频使用已上传的飞书资源 key。
+
+```bash
+curl -fsS http://127.0.0.1:8000/im/reply \
+  --form-string 'payload={"message_id":"om_xxx","bot_id":"1","reply_in_thread":true,"idempotency_key":"deliver-report-1"}' \
+  --form-string 'type=file' \
+  -F 'file=@./report.pdf;type=application/pdf'
+```
+
+若实例配置了 `GATEWAY_TOKEN`，请求还需带 `Authorization: Bearer …`。
+
+三个接口都可传 `task_id`，将新发飞书消息关联到任务。`/im/send` 和 `/im/reply` 的任务消息需要传稳定的 `idempotency_key`（最多 50 字符）。`/im/respond` 默认使用 `inbound:{id}`，省略 `task_id` 时可沿用已有的分发归属。任务消息的结果包含 `task_link`，若状态为 `unrecorded`，可按原因处理，写入失败时用同一个幂等键重试。重试直接上传时，同一个幂等键用于飞书消息去重，附件仍可能重新上传。
+
+### 消息上下文
 
 `/im/messages/context` 返回每条消息的 `task_refs`，可传 `reply_to_message_id` 获取同群的直接引用目标 `reply_target`。Dispatcher 优先核对引用消息对应的任务契约。
 
