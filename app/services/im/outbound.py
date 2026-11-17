@@ -1,9 +1,23 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+import asyncio
+import json
+import re
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any, BinaryIO, Optional
 
 from app.core.settings import user_cli_profile_args
-from app.infra.lark.cli import LarkCliError, run_cli_async
+from app.infra.lark.cli import LarkCliError, run_cli, run_cli_async
+
+
+@dataclass(frozen=True)
+class UploadAttachment:
+    kind: str
+    filename: str
+    file: BinaryIO
 
 
 def build_mention_prefix(open_ids: list[str] | None) -> str:
@@ -109,18 +123,135 @@ def extract_thread_id(result: Any) -> Optional[str]:
     return None
 
 
+def _structured_content_args(
+    message: dict[str, Any], mention_open_ids: Optional[list[str]]
+) -> list[str]:
+    kind = message["type"]
+    if kind == "markdown":
+        markdown = compose_text(message["text"], mention_open_ids)
+        kind = "post"
+        content = {"zh_cn": {"content": [[{"tag": "md", "text": markdown}]]}}
+    elif kind == "image":
+        content = {"image_key": message["image_key"]}
+    elif kind == "card":
+        kind = "interactive"
+        content = message["content"]
+    elif kind in ("file", "audio", "video"):
+        content = {"file_key": message["file_key"]}
+        if kind == "video":
+            kind = "media"
+            if message.get("image_key") is not None:
+                content["image_key"] = message["image_key"]
+    else:
+        raise ValueError(f"unsupported outbound message type: {kind}")
+    return ["--msg-type", kind, "--content", json.dumps(content, ensure_ascii=False)]
+
+
+def _safe_attachment_name(filename: str) -> str:
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    name = re.sub(r"[\x00-\x1f\x7f]", "_", name).strip()
+    if name in {"", ".", ".."}:
+        return "attachment"
+    if len(name.encode("utf-8")) <= 255:
+        return name
+    suffix = Path(name).suffix
+    ending = suffix.encode("utf-8")[:32].decode("utf-8", errors="ignore")
+    stem = name.removesuffix(suffix).encode("utf-8")
+    return stem[: 255 - len(ending.encode("utf-8"))].decode(
+        "utf-8", errors="ignore"
+    ) + ending
+
+
+def _run_upload(
+    args: list[str], options: list[str], upload: UploadAttachment
+) -> dict:
+    filename = _safe_attachment_name(upload.filename)
+    relative_path = f"./{filename}"
+    try:
+        with TemporaryDirectory(prefix="lark-im-") as temporary:
+            directory = Path(temporary)
+            staged_path = directory / filename
+            with staged_path.open("wb") as staged:
+                shutil.copyfileobj(upload.file, staged)
+            try:
+                return run_cli(
+                    [*args, f"--{upload.kind}", relative_path, *options],
+                    cwd=directory,
+                )
+            except LarkCliError as exc:
+
+                def safe_error(value: str) -> str:
+                    return (
+                        value.replace(str(staged_path), "<attachment>")
+                        .replace(str(directory), "<upload>")
+                        .replace(relative_path, "<attachment>")
+                    )
+
+                raise LarkCliError(
+                    safe_error(str(exc)),
+                    returncode=exc.returncode,
+                    stdout=safe_error(exc.stdout),
+                    stderr=safe_error(exc.stderr),
+                ) from exc
+    except OSError as exc:
+        raise LarkCliError(
+            "could not process uploaded attachment", returncode=1, stdout="", stderr=""
+        ) from exc
+
+
+async def _run_outbound(
+    args: list[str],
+    *,
+    text: str,
+    markdown: bool,
+    mention_open_ids: Optional[list[str]],
+    message: Optional[dict[str, Any]],
+    upload: Optional[UploadAttachment],
+    reply_in_thread: bool = False,
+    idempotency_key: Optional[str] = None,
+) -> dict:
+    options = ["--reply-in-thread"] if reply_in_thread else []
+    if idempotency_key:
+        options.extend(["--idempotency-key", idempotency_key[:50]])
+
+    if upload is not None:
+        operation = asyncio.get_running_loop().run_in_executor(
+            None, _run_upload, args, options, upload
+        )
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            # Finish reading the caller's stream before cancellation can close it.
+            while not operation.done():
+                try:
+                    await asyncio.wait({operation})
+                except asyncio.CancelledError:
+                    continue
+            if not operation.cancelled():
+                operation.exception()
+            raise
+
+    if message is None:
+        content = compose_text(text, mention_open_ids)
+        content_args = ["--markdown" if markdown else "--text", content]
+    else:
+        content_args = _structured_content_args(message, mention_open_ids)
+    return await run_cli_async([*args, *content_args, *options])
+
+
 async def reply_message(
     *,
     message_id: str,
-    text: str,
+    text: str = "",
     mention_open_ids: Optional[list[str]] = None,
     reply_in_thread: bool = False,
     profile: Optional[str] = None,
     as_user: bool = False,
     markdown: bool = False,
     idempotency_key: Optional[str] = None,
+    message: Optional[dict[str, Any]] = None,
+    upload: Optional[UploadAttachment] = None,
 ) -> dict:
-    content = compose_text(text, mention_open_ids)
     args = [
         "im",
         "+messages-reply",
@@ -128,29 +259,34 @@ async def reply_message(
         "--message-id",
         message_id,
     ]
-    if markdown:
-        args.extend(["--markdown", content])
-    else:
-        args.extend(["--text", content])
-    if reply_in_thread:
-        args.append("--reply-in-thread")
-    if idempotency_key:
-        args.extend(["--idempotency-key", idempotency_key[:50]])
-    return await run_cli_async(args)
+    return await _run_outbound(
+        args,
+        text=text,
+        markdown=markdown,
+        mention_open_ids=mention_open_ids,
+        message=message,
+        upload=upload,
+        reply_in_thread=reply_in_thread,
+        idempotency_key=idempotency_key,
+    )
 
 
 async def respond_to_message(
     *,
     message_id: str,
-    text: str,
+    text: str = "",
     profile: str,
     thread_id: Optional[str] = None,
     sender_open_id: Optional[str] = None,
     mention_open_ids: Optional[list[str]] = None,
     idempotency_key: Optional[str] = None,
+    message: Optional[dict[str, Any]] = None,
+    upload: Optional[UploadAttachment] = None,
 ) -> dict:
-    """Controlled reply: auto thread flag + sender-first mention merge."""
-    mentions = merge_mention_open_ids(sender_open_id, mention_open_ids)
+    """Reply in the inbound thread and mention the sender for text and Markdown."""
+    mentions = None
+    if upload is None and (message is None or message["type"] == "markdown"):
+        mentions = merge_mention_open_ids(sender_open_id, mention_open_ids)
     return await reply_message(
         message_id=message_id,
         text=text,
@@ -158,20 +294,23 @@ async def respond_to_message(
         reply_in_thread=should_reply_in_thread(thread_id),
         profile=profile,
         idempotency_key=idempotency_key,
+        message=message,
+        upload=upload,
     )
 
 
 async def send_message(
     *,
     chat_id: str,
-    text: str,
+    text: str = "",
     mention_open_ids: Optional[list[str]] = None,
     profile: Optional[str] = None,
     as_user: bool = False,
     markdown: bool = False,
     idempotency_key: Optional[str] = None,
+    message: Optional[dict[str, Any]] = None,
+    upload: Optional[UploadAttachment] = None,
 ) -> dict:
-    content = compose_text(text, mention_open_ids)
     args = [
         "im",
         "+messages-send",
@@ -179,17 +318,20 @@ async def send_message(
         "--chat-id",
         chat_id,
     ]
-    if markdown:
-        args.extend(["--markdown", content])
-    else:
-        args.extend(["--text", content])
-    if idempotency_key:
-        args.extend(["--idempotency-key", idempotency_key[:50]])
-    return await run_cli_async(args)
+    return await _run_outbound(
+        args,
+        text=text,
+        markdown=markdown,
+        mention_open_ids=mention_open_ids,
+        message=message,
+        upload=upload,
+        idempotency_key=idempotency_key,
+    )
 
 
 __all__ = [
     "LarkCliError",
+    "UploadAttachment",
     "build_mention_prefix",
     "compose_text",
     "merge_mention_open_ids",

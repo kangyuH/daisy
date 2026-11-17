@@ -36,20 +36,27 @@ def run_cli(
     *,
     timeout: float = 120,
     input_text: Optional[str] = None,
+    cwd: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Run lark-cli and parse JSON stdout. Raises LarkCliError on failure."""
     cmd = [lark_bin(), *args]
     if "--json" not in cmd and not any(a.startswith("--format") for a in cmd):
         cmd.append("--json")
 
-    proc = subprocess.run(
-        cmd,
-        input=input_text,
-        text=True,
-        capture_output=True,
-        env=cli_env(),
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=input_text,
+            text=True,
+            capture_output=True,
+            env=cli_env(),
+            timeout=timeout,
+            cwd=cwd,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LarkCliError(
+            "lark-cli request timed out", returncode=124, stdout="", stderr=""
+        ) from exc
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
     if proc.returncode != 0:

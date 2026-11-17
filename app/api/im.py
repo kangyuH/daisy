@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable
 from typing import Any, Optional
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.api.im_payload import (
+    OutboundRequest,
+    ReplyBody,
+    RespondBody,
+    SendBody,
+    outbound_openapi,
+    read_outbound,
+)
 from app.core.deps import (
     bot_profile,
     check_token,
@@ -26,34 +35,6 @@ from app.services.queue.service import QUEUE_INBOUND
 
 router = APIRouter(prefix="/im", tags=["im"])
 logger = logging.getLogger(__name__)
-
-
-class OutboundBody(BaseModel):
-    task_id: Optional[int] = Field(default=None, gt=0)
-    idempotency_key: Optional[str] = None
-
-
-class ReplyBody(OutboundBody):
-    message_id: str
-    text: str = ""
-    mention_open_ids: list[str] = Field(default_factory=list)
-    reply_in_thread: bool = False
-    bot_id: Optional[str] = None
-
-
-class RespondBody(OutboundBody):
-    """Reply to a queued inbound with its message and sender details."""
-
-    inbound_id: int
-    text: str = ""
-    mention_open_ids: list[str] = Field(default_factory=list)
-
-
-class SendBody(OutboundBody):
-    chat_id: str
-    text: str = ""
-    mention_open_ids: list[str] = Field(default_factory=list)
-    bot_id: Optional[str] = None
 
 
 class ContextBody(BaseModel):
@@ -113,24 +94,9 @@ async def _outbound_task_link(
     return {"task_link": {**link, "status": "recorded"}}
 
 
-@router.post("/reply")
-async def im_reply(
-    body: ReplyBody,
-    request: Request,
-    authorization: Optional[str] = Header(default=None),
-):
-    check_token(authorization)
-    await _validate_task_send(request, body.task_id, body.idempotency_key)
-    profile = bot_profile(request, body.bot_id)
+async def _send_outbound(operation: Awaitable[dict]) -> dict:
     try:
-        result = await reply_message(
-            message_id=body.message_id,
-            text=body.text,
-            mention_open_ids=body.mention_open_ids,
-            reply_in_thread=body.reply_in_thread,
-            profile=profile,
-            idempotency_key=body.idempotency_key,
-        )
+        return await operation
     except LarkCliError as exc:
         raise HTTPException(
             status_code=502,
@@ -141,6 +107,24 @@ async def im_reply(
                 "stderr": exc.stderr,
             },
         ) from exc
+
+
+@router.post("/reply", openapi_extra=outbound_openapi("reply", ReplyBody))
+async def im_reply(
+    request: Request,
+    outbound: OutboundRequest[ReplyBody] = Depends(read_outbound(ReplyBody)),
+):
+    body = outbound.body
+    await _validate_task_send(request, body.task_id, body.idempotency_key)
+    result = await _send_outbound(
+        reply_message(
+            message_id=body.message_id,
+            reply_in_thread=body.reply_in_thread,
+            profile=bot_profile(request, body.bot_id),
+            idempotency_key=body.idempotency_key,
+            **outbound.content_kwargs(),
+        )
+    )
     return {
         "ok": True,
         "result": result,
@@ -148,14 +132,13 @@ async def im_reply(
     }
 
 
-@router.post("/respond")
+@router.post("/respond", openapi_extra=outbound_openapi("respond", RespondBody))
 async def im_respond(
-    body: RespondBody,
     request: Request,
-    authorization: Optional[str] = Header(default=None),
+    outbound: OutboundRequest[RespondBody] = Depends(read_outbound(RespondBody)),
 ):
     """Look up inbound queue item; auto-fill message_id/thread/sender for reply."""
-    check_token(authorization)
+    body = outbound.body
     q = get_queue(request)
     try:
         item = await q.get(body.inbound_id)
@@ -188,26 +171,17 @@ async def im_respond(
             request.app.state.message_task_store.find_inbound_task, body.inbound_id
         )
 
-    try:
-        result = await respond_to_message(
+
+    result = await _send_outbound(
+        respond_to_message(
             message_id=message_id,
-            text=body.text,
             profile=profile,
             thread_id=thread_id,
             sender_open_id=sender_open_id,
-            mention_open_ids=body.mention_open_ids,
             idempotency_key=idem,
+            **outbound.content_kwargs(),
         )
-    except LarkCliError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": str(exc),
-                "returncode": exc.returncode,
-                "stdout": exc.stdout,
-                "stderr": exc.stderr,
-            },
-        ) from exc
+    )
     return {
         "ok": True,
         "inbound_id": body.inbound_id,
@@ -216,33 +190,21 @@ async def im_respond(
     }
 
 
-@router.post("/send")
+@router.post("/send", openapi_extra=outbound_openapi("send", SendBody))
 async def im_send(
-    body: SendBody,
     request: Request,
-    authorization: Optional[str] = Header(default=None),
+    outbound: OutboundRequest[SendBody] = Depends(read_outbound(SendBody)),
 ):
-    check_token(authorization)
+    body = outbound.body
     await _validate_task_send(request, body.task_id, body.idempotency_key)
-    profile = bot_profile(request, body.bot_id)
-    try:
-        result = await send_message(
+    result = await _send_outbound(
+        send_message(
             chat_id=body.chat_id,
-            text=body.text,
-            mention_open_ids=body.mention_open_ids,
-            profile=profile,
+            profile=bot_profile(request, body.bot_id),
             idempotency_key=body.idempotency_key,
+            **outbound.content_kwargs(),
         )
-    except LarkCliError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": str(exc),
-                "returncode": exc.returncode,
-                "stdout": exc.stdout,
-                "stderr": exc.stderr,
-            },
-        ) from exc
+    )
     return {
         "ok": True,
         "result": result,
