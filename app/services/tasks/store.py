@@ -52,6 +52,8 @@ def _row_task(row: Any) -> dict[str, Any]:
 def _row_event(row: Any) -> dict[str, Any]:
     d = dict(row)
     raw = d.pop("payload_json", None)
+    d.pop("idempotency_key", None)
+    d.pop("board_sync_json", None)
     if raw:
         try:
             d["payload"] = json.loads(raw)
@@ -527,10 +529,14 @@ class TaskStore:
         actor: str = "api",
         inbound_id: Optional[int] = None,
         payload: Any = None,
+        idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
         msg = (message or "").strip()
         if not msg:
             raise TaskValidationError("message is required")
+        key = idempotency_key.strip() if idempotency_key is not None else None
+        if key is not None and not 1 <= len(key) <= 128:
+            raise TaskValidationError("idempotency_key must be 1 to 128 characters")
         et = validate_followup_event_type(event_type)
         actor_s = (actor or "api").strip() or "api"
         new_status = validate_status(status) if status is not None else None
@@ -541,9 +547,38 @@ class TaskStore:
 
         conn = self._connect()
         try:
+            if key is not None:
+                conn.execute("BEGIN IMMEDIATE")
             task = self._get_task_conn(conn, task_id)
             if not task:
                 raise KeyError(f"task {task_id} not found")
+            if key is not None:
+                existing = conn.execute(
+                    "SELECT * FROM task_events WHERE task_id = ? AND idempotency_key = ?",
+                    (task_id, key),
+                ).fetchone()
+                if existing is not None:
+                    event = _row_event(existing)
+                    expected = {
+                        "message": msg,
+                        "event_type": et,
+                        "to_status": new_status,
+                        "actor": actor_s,
+                        "inbound_id": inbound_id,
+                        "payload": payload,
+                    }
+                    if any(event[field] != value for field, value in expected.items()):
+                        raise TaskConflictError(
+                            "idempotency_key already used for a different followup"
+                        )
+                    result = {"task": task, "event": event}
+                    if existing["board_sync_json"] is not None:
+                        result["board_sync"] = json.loads(existing["board_sync_json"])
+                    # END IMMEDIATE explicitly: the replay path writes nothing, and
+                    # leaving the transaction open would hold the write lock while
+                    # building the response.
+                    conn.rollback()
+                    return result
 
             from_status = str(task["status"])
             to_status = from_status
@@ -588,8 +623,8 @@ class TaskStore:
                 """
                 INSERT INTO task_events (
                     task_id, event_type, message, from_status, to_status,
-                    actor, inbound_id, created_at, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    actor, inbound_id, created_at, payload_json, idempotency_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -601,6 +636,7 @@ class TaskStore:
                     inbound_id,
                     now,
                     payload_s,
+                    key,
                 ),
             )
             event_id = int(cur.lastrowid)
@@ -634,6 +670,18 @@ class TaskStore:
             actor=actor_s,
         )
         return {"task": task, "event": event}
+
+    def record_followup_board_sync(self, event_id: int, result: dict[str, Any]) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE task_events SET board_sync_json = ? "
+                "WHERE id = ? AND idempotency_key IS NOT NULL AND board_sync_json IS NULL",
+                (json.dumps(result, ensure_ascii=False), event_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     # --- clues ---
 

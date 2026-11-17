@@ -117,10 +117,15 @@ CREATE TABLE IF NOT EXISTS task_events (
     inbound_id INTEGER,
     created_at TEXT NOT NULL,
     payload_json TEXT,
+    idempotency_key TEXT,
+    board_sync_json TEXT,
     FOREIGN KEY (task_id) REFERENCES tasks(id)
 );
 CREATE INDEX IF NOT EXISTS idx_task_events_task
     ON task_events(task_id, created_at);
+-- NOTE: idx_task_events_idempotency is created in _migrate_schema, after the
+-- columns are added. Creating it here would fail on pre-existing DBs because
+-- CREATE TABLE IF NOT EXISTS does not add columns to an existing table.
 
 CREATE TABLE IF NOT EXISTS chat_projects (
     chat_id TEXT PRIMARY KEY,
@@ -207,6 +212,16 @@ def _add_columns_if_missing(
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """Existing DBs: ADD COLUMN / indexes for fields introduced after first schema."""
     _migrate_tasks_columns(conn)
+    _add_columns_if_missing(
+        conn,
+        "task_events",
+        [("idempotency_key", "TEXT"), ("board_sync_json", "TEXT")],
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_events_idempotency "
+        "ON task_events(task_id, idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL"
+    )
     _add_columns_if_missing(
         conn,
         "queue_items",

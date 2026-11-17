@@ -10,6 +10,7 @@ from app.core.deps import check_token, get_queue, get_task_store
 from app.core.settings import auth_user_open_id
 from app.services.agent.enqueue import enqueue_auto_research
 from app.services.queue.service import ItemQueue
+from app.services.tasks import gateway as task_gateway
 from app.services.tasks.board import TaskBoardSync
 from app.services.tasks.models import (
     EVENT_NOTE,
@@ -162,8 +163,8 @@ async def list_tasks(
 ):
     check_token(authorization)
     try:
-        tasks = await asyncio.to_thread(
-            store.list_tasks,
+        return await task_gateway.list_tasks(
+            store,
             status=status,
             bot_id=bot_id,
             chat_id=chat_id,
@@ -174,7 +175,6 @@ async def list_tasks(
         )
     except TaskValidationError as exc:
         raise _http_from_store_error(exc) from exc
-    return {"ok": True, "tasks": tasks}
 
 
 @router.post("/tasks/{task_id}/contract")
@@ -201,12 +201,10 @@ async def get_task(
     events_limit: int = Query(default=50, ge=1, le=500),
 ):
     check_token(authorization)
-    task = await asyncio.to_thread(
-        store.get_task, task_id, events_limit=events_limit
-    )
-    if not task:
-        raise HTTPException(status_code=404, detail=f"task {task_id} not found")
-    return {"ok": True, "task": task}
+    try:
+        return await task_gateway.get_task(store, task_id, events_limit=events_limit)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=exc.args[0]) from exc
 
 
 @router.post("/tasks/{task_id}/followups")
@@ -219,8 +217,9 @@ async def add_followup(
 ):
     check_token(authorization)
     try:
-        result = await asyncio.to_thread(
-            store.add_followup,
+        return await task_gateway.append_followup(
+            store,
+            _board_sync(request, store),
             task_id,
             message=body.message,
             event_type=body.event_type,
@@ -231,16 +230,6 @@ async def add_followup(
         )
     except (TaskValidationError, TaskConflictError, KeyError) as exc:
         raise _http_from_store_error(exc) from exc
-    board = await _board_sync(request, store).sync_followup(
-        result["task"], result["event"]
-    )
-    refreshed = await asyncio.to_thread(store.get_task, task_id)
-    return {
-        "ok": True,
-        "task": refreshed or result["task"],
-        "event": result["event"],
-        "board_sync": board,
-    }
 
 
 @router.post("/tasks/{task_id}/board-messages")

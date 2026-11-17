@@ -217,6 +217,7 @@ async def add_task_refs(
     *,
     chat_id: Optional[str] = None,
     reply_to_message_id: Optional[str] = None,
+    task_chat_id: Optional[str] = None,
 ) -> dict[str, Any]:
     anchor = context["anchor"]
     messages = context["messages"]
@@ -244,7 +245,7 @@ async def add_task_refs(
         for message in [*messages, anchor, target]
         if message and (message_id := _msg_id(message))
     }
-    refs = await asyncio.to_thread(store.find_refs, message_ids)
+    refs = await asyncio.to_thread(store.find_refs, message_ids, task_chat_id=task_chat_id)
 
     def annotate(message: dict[str, Any]) -> dict[str, Any]:
         return {**message, "task_refs": refs.get(_msg_id(message), [])}

@@ -27,19 +27,22 @@ class MessageTaskStore:
             ).fetchone()
             return row["task_id"] == task_id
 
-    def find_inbound_task(self, inbound_id: int) -> int | None:
+    def find_inbound_task(self, inbound_id: int, *, task_chat_id: str | None = None) -> int | None:
         with closing(connect_sync(self._db_path)) as conn:
             row = conn.execute(
                 """
                 SELECT tasks.id
                 FROM dispatch_runs d JOIN tasks ON tasks.id = d.task_id
                 WHERE d.inbound_id = ? AND d.decision IN ('create', 'followup')
+                  AND (? IS NULL OR tasks.chat_id = ?)
                 """,
-                (inbound_id,),
+                (inbound_id, task_chat_id, task_chat_id),
             ).fetchone()
             return row["id"] if row else None
 
-    def find_refs(self, message_ids: set[str]) -> dict[str, list[dict[str, Any]]]:
+    def find_refs(
+        self, message_ids: set[str], *, task_chat_id: str | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
         if not message_ids:
             return {}
 
@@ -61,9 +64,10 @@ class MessageTaskStore:
                 )
                 SELECT links.message_id, links.task_id, links.source, tasks.status
                 FROM links JOIN tasks ON tasks.id = links.task_id
+                WHERE (? IS NULL OR tasks.chat_id = ?)
                 ORDER BY links.message_id, links.task_id, links.source
                 """,
-                (json.dumps(sorted(message_ids)),),
+                (json.dumps(sorted(message_ids)), task_chat_id, task_chat_id),
             ).fetchall()
 
         refs: dict[str, list[dict[str, Any]]] = {}

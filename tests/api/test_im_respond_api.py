@@ -19,7 +19,7 @@ def test_im_respond_loads_inbound_item(client):
     inbound_id = enq.json()["item"]["id"]
 
     with patch(
-        "app.api.im.respond_to_message",
+        "app.services.im.gateway.respond_to_message",
         new_callable=AsyncMock,
         return_value={"ok": True},
     ) as mock_respond:
