@@ -1,39 +1,28 @@
-# Task 语义契约：本轮思路
+# 任务契约的读写与维护
 
-本文记录已经落地的契约存储和分发边界，以及暂不开发的异步维护路径。
+新账本的契约供 router 识别任务、task_owner 决定是否调整承诺，以及 worker 和验收者核对工作边界。下面分别记录当前接口和目标设计。[产品方向](blueprint.md) · [任务身份与边界](daisy-task-model.md) · [实施路线与评测](20261119-task-coordination-roadmap.md)
 
-## 已落地
+## 当前实现（schema_version 0.1）
 
-一个 Task 是一份有边界、可以判断是否完成的结果承诺。承诺正文在任务工作区的 `contract.yaml`，形状以 `docs/daisy-task-contract.template.yaml` 为准（`schema_version: "0.1"`）。
+契约正文存在任务工作区的 `contract.yaml`，字段见[现用模板](daisy-task-contract.template.yaml)。创建任务时 Gateway 用标题或一句话生成暂定目标，保存入站来源和已有话题线索。后续由调用方显式通过 `POST /tasks/{id}/contract` 替换正文。现有 dispatcher 据 `contract_brief` 判断 `create / followup / noop`，每条入站最多产生一次任务写入；它没有编辑契约的工具。
 
-SQLite 的 `tasks` 行继续负责任务身份、进度、路由和 Agent 运行锁。和承诺重合的 `title`、`one_liner` 在保存契约时由 Gateway 投影出来，不再单独当作承诺原文。`kind`、`status`、群、thread、台账和运行锁不从契约投影。反馈位置只有在 `confirmed` 且是 `feishu_thread` 时才覆盖 `thread_id`。
+`tasks.contract_revision` 是服务端维护的保存代次。创建成功后为 1，每次显式保存加 1。请求正文中的 `revision` 会被拒绝。Gateway 从契约投影 `title` 与 `one_liner`；反馈位置只有在已确认且类型为 `feishu_thread` 时才覆盖 `thread_id`。进度、任务类型、群、台账和运行锁各自由对应字段维护。
 
-保存次数在 `tasks.contract_revision`，不写进 YAML。创建成功后为 1，每次 `POST /tasks/{id}/contract` 加 1。请求体里带 `revision` 会被拒绝。这样代次由接口维护，不靠调用方自己记得加一。新正文先写到 `contract.yaml.tmp`，代次和投影提交成功后再替换 `contract.yaml`。更新失败则删掉临时文件，上一版契约和代次保持不动。
+`GET /tasks/{id}` 返回整份契约，列表只带代次。代次为 0 且没有文件的旧任务，详情按已有列合成初稿并标记 `contract_persisted=false`。现有保存流程先暂存 YAML，再提交数据库代次和投影，最后替换文件。数据库更新失败时保留上一版；文件替换若在提交后失败，代次与文件可能不同步。写入接口目前没有基于旧版本的并发检查。[保存实现](../app/services/tasks/store.py)
 
-`GET /tasks/{id}` 附带整份契约。`contract_revision = 0` 且没有文件时，按旧列合成同一形状，`contract_persisted` 为 false，不落盘。列表只带 `contract_revision`。
+## 新账本的设计目标
 
-已有任务已按当时的标题、一句话和写明的拆分做过一轮转录。目标陈述多为 `provisional`，验收和相关方多为 `open`。
+初稿可保留待澄清项。交给 worker 时，owner 要让一个刚接手的会话能看清四件事：
 
-## Dispatcher 的边界
+| 要素 | 例子：核对十月渠道收入 |
+|---|---|
+| 交付目标 | 给出收入差异的原因和影响范围 |
+| 对象与边界 | 十月的渠道收入报表，限已约定的渠道；历史回填需另行决定 |
+| 验收证据 | 对账数字、差异来源和能复查的计算依据，由业务负责人确认口径 |
+| 停止或交回条件 | 口径冲突即交回；完成约定检查仍无法定位时，列明排除项和缺少的材料，交由负责人决定 |
 
-Dispatcher 只做两件事：判断这条消息属于哪个任务，然后把原始需求附上去。决定仍是 `create`、`followup`、`noop`。
+task_owner 根据新证据维护契约、叙事和标签。收到资料、转问某人、等待外部答复等事实进入事件记录与叙事；交付范围、验收标准或停止条件改变时才修订契约，并留下理由与来源。worker 可提交澄清、进展、交付物和异议，契约变更由 owner 或人工接管者决定。评审结果引用所依据的契约版本。
 
-认任务时读工具返回的 `contract_brief`：业务对象（类型、引用、这一次发生范围、状态）、目标陈述与状态、范围是否列全、纳入与排除、验收是否列全、缺口问题、父任务引用。标题、群和 thread 只用于过滤和路由。`provisional` 不是已经确认的承诺。某条任务带 `contract_brief_error` 时，短稿没有取到，不能按标题跟进。
+同一消息里的不同要求可挂在多个既有任务上。router 提供相关原句和归属理由，待判断部分进入项目根；是否变更契约、建子任务或重新唤醒稳定任务由 owner 决定。每次 agent 运行退出后，任务的叙事、等待条件和控制权仍留在账本。
 
-跟进把入站原文记到该任务上，不改目标、范围或验收。另一份可以单独验收的承诺才新建；新建仍走 `POST /tasks`，由 Gateway 按标题和 `one_liner` 生成契约初稿。对不上，或跟进会悄悄扩大原任务责任时，选择 `noop` 并写明原因。
-
-Dispatcher 没有改契约的工具。范围是否变化、父子关系如何写入契约，不在分发里完成。
-
-## 暂不开发：异步维护契约
-
-维护契约的是后续 agent，不是 Dispatcher。本轮不改自动调研、规划和执行。
-
-设想中的路径是：
-
-- 自动调研仍写 `research.md` 的诉求澄清、事实层和方案建议。
-- 本轮对契约的修改建议另写工作区里的 `contract.proposal.yaml`，不直接改 `contract.yaml`。
-- 调研结束时由 Gateway 校验提案。通过才调用 `save_contract`，`contract_revision` 加 1。校验失败只记一条错误，不替换现有契约。
-- 提出者原文标 `confirmed`，有依据的推断标 `provisional`，看不出保持 `open`。空列表不表示已经确认没有。不得扩大承诺。业务上的取舍留在 `gaps`。
-- 规划与执行只读当前契约：不超出 `scope`；缺口还没解开时，只做 `gaps` 里允许做的事，不承诺那里写明不能承诺的结果。
-
-这条路径等维护契约的 agent 单独开发时再接。在那之前，契约只在创建时生成初稿，或由调用方显式 `POST /tasks/{id}/contract`。
+新账本拟由 VPS 数据库在一次事务内保存契约正文、服务端修订号及相应投影。所有客户端按读到的版本提交变更，冲突后重读并核对差异，YAML 可按需导出。业务证据、叙事和运行记录可独立更新，使“归档一条消息”和“调整一份承诺”各自可追溯。上述目标尚未改变现有 `0.1` 接口。
