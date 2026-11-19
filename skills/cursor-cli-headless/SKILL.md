@@ -8,7 +8,7 @@ description: >-
 
 # Cursor CLI Headless（lark-superbot）
 
-本 skill 描述 Gateway 如何用本机 `agent` CLI 推进任务。实现代码在仓库：
+本页用于维护当前分支的 Gateway 内置 Cursor 执行链。要设计内网 daemon 拉起的 router、task_owner 或 worker，请从[产品蓝图](../../docs/blueprint.md)和[阶段路线图](../../docs/20261119-task-coordination-roadmap.md)进入。下文的会话、口令和进程组约定适用于现有实现。
 
 - `app/services/agent/cli_runner.py` — argv、spawn 进程组、stream-json 取 session
 - `app/services/agent/runtime.py` — mode、workspace、claim、followup / board-message

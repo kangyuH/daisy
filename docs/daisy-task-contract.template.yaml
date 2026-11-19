@@ -1,4 +1,5 @@
-# Daisy Task 语义契约模板（讨论稿）
+# 现行任务契约模板（schema_version 0.1）
+# 新账本的精简契约与角色分工见同目录 task-contract-design.md 和 blueprint.md。
 # 目的：描述一份有边界、可验收的结果承诺；不记录运行、消息往来或事件流水。
 #
 # 填写规则：

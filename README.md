@@ -1,26 +1,26 @@
 # lark-superbot
 
-这是一个跑在你自己机器上的**飞书任务入口**：别人在业务群里 `@` 你的机器人（或 `@` 你），本服务会听进去，用大模型判断「这是新事项、还是在跟某条老任务、还是无关」，然后把结论记成任务，并同步到你指定的**台账群**（每条任务一条消息，跟进写在话题里，方便点开看）。
+lark-superbot 的产品方向是一本供人和 agent 共用的任务记事本。目标架构把任务树、契约、进度和飞书收发放在 VPS，由内网 daemon 拉起 agent。router 给消息找归属，task_owner 维护任务，worker 按契约办理。第一版计划由人主动挑选任务执行。
 
-注意：默认只负责**分发和记账**，不会自动在业务群长篇回复。create / followup 分发成功后，Gateway 会用业务 bot 回一条短回执（任务标题，不含编号）；noop 不回。创建任务后会串行自动 **research**（Cursor CLI）；改代码 / 跑现场须在台账 thread 发 `/plan`、`/exec`（见下）。
+[产品蓝图](docs/blueprint.md)说明角色分工、任务生命周期和人工接管。[实施路线图](docs/20261119-task-coordination-roadmap.md)给出各阶段的交付顺序和评测方法。
 
-长期愿景（飞书闭环、决策分流、允许清单内自动执行）与分阶段路线见 [docs/blueprint.md](docs/blueprint.md)。当前实现仍以下文为准。
+## 当前版本能做什么
 
-## 能做什么
+下文是本分支的运行说明。现有 Dispatcher 把一条入站判为新建、跟进一条已有任务或略过。建任务和跟进会同步飞书台账；业务群的自动文字回执已关闭。当前版本仍提供自动 research 和台账执行命令。
 
 | 能力 | 说明 |
 |------|------|
 | 多业务 Bot 长连接收件 | 每个业务应用各自 `event consume`；只处理已绑定业务群里的 `@bot` / `@登录用户` |
 | 入队与串行消费 | 消息进 SQLite 队列；独立 worker 进程 claim → 处理 → ack/nack |
-| 智能分发（默认） | Dispatcher 拉上下文、看开放任务，决定 create / followup / noop，并留痕；create/followup 时 Gateway 短回执业务群 |
-| 任务台账 | 创建/跟进后，用 **lark-cli 默认 app 的 bot** 在台账群发根消息并开话题帖 |
-| 自动 research | create 后入 `queue=agent`，agent worker 串行拉起 Cursor CLI 写 `research.md` + followup |
+| 智能分发（默认） | Dispatcher 拉上下文、看开放任务，记录 create / followup / noop 及判断依据 |
+| 任务台账 | 用 **lark-cli 默认 app 的 bot** 建台账根消息，后续进展追加到同一话题 |
+| 自动 research | create 后入 `queue=agent`，agent worker 串行调 Gateway 的 `/agent/run`，Gateway 在本机启动 Cursor CLI 做调研并记录 followup |
 | 台账口令 | 登录用户在任务 thread 发 `/research` `/plan` `/exec` `/stop`（当场 spawn，不入队） |
 | HTTP API | 注册 bot、绑群、查/建任务、跟进、发消息、拉上下文等 |
 
-典型一天：业务群有人 `@你的业务 bot` → Gateway 入队 → Dispatcher 建一条任务或跟进旧任务 → 业务群短回执 + 台账群出现台账帖（并 `@` 你这个登录用户）。
+业务群有人 `@业务 bot` 后，Gateway 将消息入队。Dispatcher 新建任务时，台账群会出现一条任务帖；如果是跟进，则写进已有任务的话题。
 
-## 架构（简图）
+## 当前运行架构
 
 ```text
 飞书业务群 ──@bot/@你──► 业务 bot (lark-cli event consume)
@@ -29,7 +29,7 @@
                          Gateway :8000
                          (SQLite / 队列 / HTTP API)
                          ├─ inbound → Dispatcher worker
-                         ├─ agent   → Agent worker（自动 research）
+                         ├─ agent   → Agent worker → /agent/run → Gateway 执行 Cursor CLI
                          └─ 台账口令 → 当场 spawn Cursor CLI
                               │
                               ▼
@@ -154,6 +154,7 @@ cp .env.example .env
 | `GATEWAY_BASE_URL` | Worker 访问 Gateway 的地址 | `http://127.0.0.1:8000` |
 | `GATEWAY_TOKEN` | 若设置，所有管理 API 需 `Authorization: Bearer …` | 空（不校验） |
 | `WORKER_IMPL` | `dispatcher`（智能分发）或 `simple`（调试回「出来干活」） | `dispatcher` |
+| `AGENT_AUTO_RESEARCH` | 是否在建任务后自动安排 research。设为 `false` 时，台账里的手动命令仍可用 | `true` |
 | `WORKER_ID` | claim 时的 worker 标识 | `daemon-1` |
 | `WORKER_IDLE_SLEEP` | 队列空时休眠秒数 | `3` |
 | `DISPATCHER_LLM_PROVIDER` | LLM 厂商（目前仅 `deepseek`） | `deepseek` |
@@ -221,7 +222,7 @@ curl -sS -H 'Content-Type: application/json' \
   -d '{"project_id":"my-project","note":"可选说明"}'
 ```
 
-建任务未显式传 `project_id` 时会继承。项目知识可放在本地 `knowledge/projects/`（该目录默认 gitignore）。
+建任务时会继承业务群绑定的 `project_id`，也可在请求中显式指定。当前 Dispatcher 经 Gateway 读取群与项目的绑定；Gateway 启动的调研 agent 使用本地 `knowledge/projects/` 中的项目配置。
 
 ### 4. 验证
 
@@ -244,7 +245,7 @@ curl -sS -H 'Content-Type: application/json' \
 
 若设置了 `GATEWAY_TOKEN`，以上请求都要加：`-H "Authorization: Bearer $GATEWAY_TOKEN"`。
 
-## 任务约定
+## 当前任务模型
 
 释义以代码为准：`app/services/tasks/models.py`。
 
@@ -267,7 +268,8 @@ curl -sS -H 'Content-Type: application/json' \
 | `done` | 完成且已反馈 |
 | `cancelled` | 取消 |
 
-终态 `done` / `cancelled` 后仍可追加 note，不可再改 status（HTTP 409）。  
+当前 API 允许给 `done` / `cancelled` 追加 note，变更终态会返回 HTTP 409。新蓝图中可再次唤起的稳定态属于后续实现。
+
 台账飞书失败不阻断落库，会记 `board_sync_error`，后续 followup 会尝试补建。
 
 ### 语义契约（contract）
@@ -291,14 +293,14 @@ curl -sS -H 'Content-Type: application/json' \
 | `one_liner` | 这线索在本任务里干了什么（可更新） |
 | `relevance` | `primary` > `related` > `weak`；新建默认 `related`；upsert 默认只升不降（除非 `demote=true`） |
 
-## Worker 模式
+## 当前入站 worker 模式
 
 | 模式 | 职责 |
 |------|------|
-| **dispatcher**（默认） | 拉上下文，只读契约短稿认任务，决定 create / followup / noop，并留痕；不改契约。create / followup 时 Gateway 自动短回执业务群（只含任务标题，不含编号）；noop 不回 |
+| **dispatcher**（默认） | 拉上下文、读契约短稿，决定 create / followup / noop 并记录判断依据；契约由调用方通过 API 维护 |
 | **simple** | 调试：被 @bot 时回一句「出来干活」；仅 @self 则 skip |
 
-Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_open_tasks`、`get_task`、`create_task`、`followup_task`、`finalize_dispatch`。认任务时读返回里的 `contract_brief`，不改契约。思路见 [`docs/task-contract-design.md`](docs/task-contract-design.md)。
+Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_open_tasks`、`get_task`、`create_task`、`followup_task`、`finalize_dispatch`。认任务时读取工具返回的 `contract_brief`。当前契约版本见[契约设计说明](docs/task-contract-design.md)。
 
 ## HTTP API 一览
 
@@ -311,7 +313,7 @@ Dispatcher 可用工具：`fetch_message_context`、`get_chat_project`、`list_o
 | `POST /tasks` · `GET /tasks` · `GET /tasks/{id}` · `POST /tasks/{id}/contract` · `POST /tasks/{id}/followups` · `POST /tasks/{id}/board-messages` | 任务与语义契约（contract 不记进展、不贴台账；board-messages 只贴台账） |
 | `POST /tasks/{id}/clues` · `GET /tasks/{id}/clues` · `GET /tasks/{id}/clues/{clue_id}` · `GET /clues?kind=&ref_key=` | 任务线索索引（读写） |
 | `PUT\|GET\|DELETE /chat-projects/{chat_id}` · `GET /chat-projects` | 群 ↔ 项目 |
-| `POST /dispatcher/runs` · `GET /dispatcher/runs/{inbound_id}` | 分发留痕；create/followup 成功时 Gateway 顺带短回执（`reply_sync`） |
+| `POST /dispatcher/runs` · `GET /dispatcher/runs/{inbound_id}` | 分发留痕。当前业务群文字回执关闭，`reply_sync` 会报告跳过 |
 | `POST /im/send` · `/im/reply` · `/im/respond` · `/im/messages/context` | 发消息 / 按 inbound 回复 / 拉上下文 |
 | `POST /queue/{name}/enqueue\|claim\|ack\|nack` · `GET /queue/{name}/stats` | 队列（`inbound` = 消息队列） |
 
