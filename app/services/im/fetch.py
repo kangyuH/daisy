@@ -65,6 +65,34 @@ def _msg_time(msg: dict[str, Any]) -> Optional[datetime]:
     return None
 
 
+def _thread_position(msg: dict[str, Any]) -> Optional[int]:
+    raw = msg.get("thread_message_position")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _chronological(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return messages oldest-first.
+
+    `create_time` only has minute precision, so same-minute messages tie. Thread
+    replies carry a monotonic `thread_message_position`, which orders them
+    exactly; use it only when every message has one, since a mixed list (thread
+    replies plus root messages) would otherwise be split into two groups.
+    """
+    if messages and all(_thread_position(message) is not None for message in messages):
+        return sorted(messages, key=lambda m: (_thread_position(m), _msg_id(m) or ""))
+    # Fall back to time alone; the sort is stable, so messages sharing a
+    # timestamp keep the order the API returned them in.
+    return sorted(
+        messages,
+        key=lambda m: _msg_time(m) or datetime.min.replace(tzinfo=TZ_CN),
+    )
+
+
 def _extract_messages(result: dict[str, Any]) -> list[dict[str, Any]]:
     data = result.get("data")
     if isinstance(data, list):
@@ -157,12 +185,29 @@ async def list_chat_messages(
     return _extract_messages(result)
 
 
-async def list_thread_messages(
+THREAD_PAGE_SIZE = 50
+# Feishu rejects page_size > 50 for threads-messages-list; the cap below bounds
+# how far we walk back (pages * 50 messages) when the anchor is far behind.
+THREAD_MAX_PAGES = 40
+
+
+def _page_meta(result: dict[str, Any]) -> tuple[Optional[str], bool]:
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return None, False
+    token = data.get("page_token") if data.get("page_token") is not None else data.get("pageToken")
+    has_more = data.get("has_more") if data.get("has_more") is not None else data.get("hasMore")
+    return (str(token) if token else None), bool(has_more)
+
+
+async def list_thread_messages_page(
     thread: str,
     *,
-    page_size: int = 50,
+    page_size: int = THREAD_PAGE_SIZE,
     order: str = "asc",
-) -> list[dict[str, Any]]:
+    page_token: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], Optional[str], bool]:
+    """One page of thread messages: (messages, next_page_token, has_more)."""
     args = [
         "im",
         "+threads-messages-list",
@@ -171,14 +216,29 @@ async def list_thread_messages(
         "--thread",
         thread,
         "--page-size",
-        str(max(1, min(page_size, 500))),
+        str(max(1, min(page_size, THREAD_PAGE_SIZE))),
         "--order",
         order,
         "--no-reactions",
         *_profile_args(),
     ]
+    if page_token:
+        args.extend(["--page-token", page_token])
     result = await run_cli_async(args)
-    return _extract_messages(result)
+    token, has_more = _page_meta(result)
+    return _extract_messages(result), token, has_more
+
+
+async def list_thread_messages(
+    thread: str,
+    *,
+    page_size: int = THREAD_PAGE_SIZE,
+    order: str = "asc",
+) -> list[dict[str, Any]]:
+    messages, _, _ = await list_thread_messages_page(
+        thread, page_size=page_size, order=order
+    )
+    return messages
 
 
 def _slice_around(
@@ -188,10 +248,7 @@ def _slice_around(
     before: int,
     after: int,
 ) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
-    messages = sorted(
-        messages,
-        key=lambda m: (_msg_time(m) or datetime.min.replace(tzinfo=TZ_CN), _msg_id(m) or ""),
-    )
+    messages = _chronological(messages)
     if not anchor_id:
         # latest window
         return messages[-(before + after) :], None
@@ -209,6 +266,119 @@ def _slice_around(
     start = max(0, idx - before)
     end = min(len(messages), idx + 1 + after)
     return messages[start:end], anchor
+
+
+def _merge_messages(
+    blocks: list[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Dedupe pages by message_id and return them in chronological order."""
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for block in blocks:
+        for message in block:
+            message_id = _msg_id(message)
+            if message_id:
+                if message_id in seen:
+                    continue
+                seen.add(message_id)
+            merged.append(message)
+    return _chronological(merged)
+
+
+def _block_earliest(block: list[dict[str, Any]]) -> Optional[datetime]:
+    times = [t for t in (_msg_time(message) for message in block) if t is not None]
+    return min(times) if times else None
+
+
+async def collect_thread_window(
+    thread: str,
+    *,
+    message_id: Optional[str],
+    anchor_time: Optional[datetime],
+    before: int,
+    after: int,
+) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]], dict[str, Any]]:
+    """Walk a thread from its newest message backwards until the anchor window fits.
+
+    Threads grow without bound, so a single ascending first page silently returns
+    week-old messages for long threads. We page downward from the newest message
+    instead, stopping as soon as:
+      * the anchor is present and has `before` older messages behind it (or the
+        thread head is reached), or
+      * the page already reaches back past the anchor timestamp without finding
+        it (deleted / not visible), or
+      * `THREAD_MAX_PAGES` is hit.
+    """
+    page_size = THREAD_PAGE_SIZE
+    blocks: list[list[dict[str, Any]]] = []
+    merged: list[dict[str, Any]] = []
+    page_token: Optional[str] = None
+    pages = 0
+    reached_head = False
+
+    while pages < THREAD_MAX_PAGES:
+        batch, page_token, has_more = await list_thread_messages_page(
+            thread, page_size=page_size, order="desc", page_token=page_token
+        )
+        pages += 1
+        if not batch:
+            reached_head = not has_more
+            break
+        blocks.append(batch)
+        merged = _merge_messages(blocks)
+
+        # No anchor id: the newest page already is the window we want.
+        if not message_id:
+            break
+
+        ids = [_msg_id(message) for message in merged]
+        if message_id in ids:
+            if ids.index(message_id) >= before or not has_more:
+                reached_head = reached_head or not has_more
+                break
+            continue
+
+        if not has_more:
+            reached_head = True
+            break
+        earliest = _block_earliest(batch)
+        if anchor_time is not None and earliest is not None and earliest < anchor_time:
+            # Walked past the anchor's own timestamp without seeing it.
+            break
+
+    meta: dict[str, Any] = {
+        "mode": "thread",
+        "pages": pages,
+        "reached_head": reached_head,
+        "anchor_missing": False,
+    }
+
+    if not merged:
+        meta["truncated"] = False
+        return [], None, meta
+
+    ids = [_msg_id(message) for message in merged]
+    anchor: Optional[dict[str, Any]] = None
+
+    if message_id and message_id in ids:
+        idx = ids.index(message_id)
+        anchor = merged[idx]
+        window = merged[max(0, idx - before) : idx + 1 + after]
+        # `truncated` means the requested history window is incomplete.
+        meta["truncated"] = idx < before
+        return window, anchor, meta
+
+    if message_id:
+        # Anchor never showed up: hand back the freshest slice instead of a
+        # stale page, and flag it so callers can refuse to act on it.
+        meta["anchor_missing"] = True
+        meta["truncated"] = True
+        limit = max(0, before) + max(0, after)
+        return (merged[-limit:] if limit else []), None, meta
+
+    limit = max(0, before) + max(0, after)
+    meta["truncated"] = False
+    return (merged[-limit:] if limit else []), None, meta
 
 
 async def add_task_refs(
@@ -277,7 +447,11 @@ async def fetch_context(
     anchor_time: Optional[datetime] = None
 
     if message_id:
-        found = await mget_messages([message_id])
+        try:
+            found = await mget_messages([message_id])
+        except LarkCliError:
+            # Deleted / invisible message: caller still has chat/thread hints.
+            found = []
         if found:
             anchor = found[0]
             resolved_chat = resolved_chat or anchor.get("chat_id")
@@ -293,14 +467,17 @@ async def fetch_context(
 
     # Thread path
     if resolved_thread:
-        msgs = await list_thread_messages(resolved_thread, page_size=min(500, max(50, before + after + 1)))
-        sliced, found_anchor = _slice_around(
-            msgs, anchor_id=message_id, before=before, after=after
+        window, found_anchor, thread_meta = await collect_thread_window(
+            resolved_thread,
+            message_id=message_id,
+            anchor_time=anchor_time,
+            before=before,
+            after=after,
         )
         if found_anchor:
             anchor = found_anchor
-        meta["mode"] = "thread"
-        return {"anchor": anchor, "messages": sliced, "meta": meta}
+        meta.update(thread_meta)
+        return {"anchor": anchor, "messages": window, "meta": meta}
 
     if not resolved_chat:
         raise ValueError("chat_id or message_id (resolvable to chat) is required")
